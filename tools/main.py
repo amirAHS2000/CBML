@@ -21,7 +21,7 @@ def train(cfg):
 
     criterion = build_loss(cfg)
     criterion_aux = None
-    if cfg.LOSSES.NAME_AUX is not '':
+    if cfg.LOSSES.NAME_AUX != '':
         criterion_aux = build_aux_loss(cfg)
 
     loss_param = None
