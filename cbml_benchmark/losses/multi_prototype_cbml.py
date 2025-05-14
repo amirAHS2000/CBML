@@ -95,7 +95,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # similarity term
         pos_sim = (normalized_embds * pos_prototypes).sum(dim=1) # [batch_size]
         neg_sim = (normalized_embds * neg_prototypes).sum(dim=1) # [batch_size]
-        sim_term = -1 * (1 / self.sigma_sq) (pos_sim - neg_sim) # [batch_size]
+        sim_term = -1 * (1 / self.sigma_sq) * (pos_sim - neg_sim) # [batch_size]
 
         bias_term = -torch.log(
             (pos_priors * pos_weights) / (neg_priors * neg_weights + 1e-8)
