@@ -15,6 +15,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.sigma_sq = cfg.LOSSES.MULTI_PROTOTYPE_CBML.SIGMA_SQ
         self.device = torch.device(cfg.MODEL.DEVICE)
 
+        self.hyper_weight = cfg.LOSSES.MULTI_PROTOTYPE_CBML.HYPER_WEIGHT
+        self.reg_weight = cfg.LOSSES.MULTI_PROTOTYPE_CBML.REG_WEIGHT
+
         # initializing parameters
 
         # prototypes: [num_classes, prototype_per_class, embed_dim]
@@ -45,6 +48,25 @@ class MultiPrototypeCBMLLoss(nn.Module):
         return similarities / self.sigma_sq
     
     def forward(self, embeddings, targets):
+        # similarity matrix
+        sim_mat = torch.matmul(embeddings, torch.t(embeddings))
+        threshold = 1e-5
+        batch_size = embeddings.size(0)
+
+        regularization_term = list()
+
+        for i in range(batch_size):
+            pos_pair_ = sim_mat[i][targets == targets[i]]
+            pos_pair_ = pos_pair_[pos_pair_ < 1 - threshold]
+            neg_pair_ = sim_mat[i][targets != targets[i]]
+
+            if len(neg_pair_) < 1 or len(pos_pair_) < 1:
+                continue
+
+            mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
+            sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
+            regularization_term.append((self.reg_weight * sigma_))
+
         # normalized embeddings: [batch_size, embed_dim]
         normalized_embds = F.normalize(embeddings, p=2, dim=1)
         # normalized prototypes: [num_classes, prototype_per_class, embed_dim]
@@ -52,7 +74,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # normalized weights: [num_classes, prototype_per_class]
         weights = F.softmax(self.weights, dim=1)
 
-        batch_size = embeddings.size(0)
+        # batch_size = embeddings.size(0)
 
         # compute cosine similarity between each embeddings and all prototypes
         similarities = self.compute_similarity(
@@ -103,7 +125,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         loss = (sim_term + bias_term).mean()
 
-        return loss
+        return loss + (sum(regularization_term) / batch_size)
     
     def compute_accuracy(self, embeddings, targets):
         """
