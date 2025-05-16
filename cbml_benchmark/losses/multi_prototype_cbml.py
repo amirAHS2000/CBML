@@ -48,7 +48,10 @@ class MultiPrototypeCBMLLoss(nn.Module):
         return similarities / self.sigma_sq
     
     def forward(self, embeddings, targets):
-        
+        # threshold used for choosing positive samples
+        pos_thresh = 1e-5
+        batch_size = embeddings.size(0)
+
         # normalized embeddings: [batch_size, embed_dim]
         normalized_embds = F.normalize(embeddings, p=2, dim=1)
         # normalized prototypes: [num_classes, prototype_per_class, embed_dim]
@@ -63,10 +66,6 @@ class MultiPrototypeCBMLLoss(nn.Module):
         pr_embd_sim = pr_embd_sim.view(
             batch_size, self.num_classes, self.prototype_per_class
         )
-
-        # threshold used for choosing positive samples
-        pos_thresh = 1e-5
-        batch_size = embeddings.size(0)
 
         # create masks for positive and negative pairs
         same_class_mask = (targets.view(-1, 1) == targets.view(1, -1)) # [batch_size, batch_size]
