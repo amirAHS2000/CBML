@@ -36,17 +36,6 @@ class MultiPrototypeCBMLLoss(nn.Module):
             torch.ones(self.num_classes).to(self.device) / self.num_classes, requires_grad=False
         )
 
-    def compute_similarity(self, embeddings, prototypes):
-        """
-        compute cosine similarity between each embeddings and all prototypes.
-        goal: used to find that one prototype which has most contribution
-        (or similarity) with the input data.
-        """
-        # embeddings: [batch_size, embed_dim]
-        # prototypes: [num_classes * prototype_per_class, embed_dim]
-        similarities = embeddings @ prototypes.t() # [batch_size, num_classes * prototype_per_class]
-        return similarities / self.sigma_sq
-    
     def forward(self, embeddings, targets):
         # threshold used for choosing positive samples
         pos_thresh = 1e-5
