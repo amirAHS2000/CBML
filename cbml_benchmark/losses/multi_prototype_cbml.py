@@ -48,26 +48,40 @@ class MultiPrototypeCBMLLoss(nn.Module):
         return similarities / self.sigma_sq
     
     def forward(self, embeddings, targets):
-        # regularization term
+        
         # normalized embeddings: [batch_size, embed_dim]
         normalized_embds = F.normalize(embeddings, p=2, dim=1)
-        sim_mat = torch.matmul(normalized_embds, normalized_embds.t()) # [batch_size, batch_size]
-        threshold = 1e-5
+        # normalized prototypes: [num_classes, prototype_per_class, embed_dim]
+        normalized_prototypes = F.normalize(self.prototypes, p=2, dim=2)
+        # normalized weights: [num_classes, prototype_per_class]
+        weights = F.softmax(self.weights, dim=1)
+
+        # similarity matrix (between all embedding vectors): [batch_size, batch_size]
+        embd_embd_sim = torch.matmul(normalized_embds, normalized_embds.t())
+        # similarity matrix (between each embeddings and all prototypes): [batch_size, num_classes * prototype_per_class]
+        pr_embd_sim = torch.matmul(normalized_embds, normalized_prototypes.view(-1, self.embed_dim).t()) / self.sigma_sq
+        pr_embd_sim = pr_embd_sim.view(
+            batch_size, self.num_classes, self.prototype_per_class
+        )
+
+        # threshold used for choosing positive samples
+        pos_thresh = 1e-5
         batch_size = embeddings.size(0)
 
-        # create a mask for positive and negative pairs
+        # create masks for positive and negative pairs
         same_class_mask = (targets.view(-1, 1) == targets.view(1, -1)) # [batch_size, batch_size]
         diff_class_mask = ~same_class_mask
         # exclude self-similarities (diagonal)
-        eye_mask = ~torch.eye(batch_size, dtype=torch.bool, device=self.device)
-        same_class_mask = same_class_mask & eye_mask
+        self_sim_mask = ~torch.eye(batch_size, dtype=torch.bool, device=self.device)
+        same_class_mask = same_class_mask & self_sim_mask
 
         # extract positive and negative pairs
-        pos_pairs = sim_mat[same_class_mask].view(batch_size, -1) # [batch_size, num_pos_pairs]
-        neg_pairs = sim_mat[diff_class_mask].view(batch_size, -1) # [batch_size, num_neg_pairs]
-
+        # TODO: if number of positive pairs and negative pairs are not equal ???
+        pos_pairs = embd_embd_sim[same_class_mask].view(batch_size, -1) # [batch_size, num_pos_pairs]
+        neg_pairs = embd_embd_sim[diff_class_mask].view(batch_size, -1) # [batch_size, num_neg_pairs]
+        
         # compute means for valid pairs
-        valid_pos = (pos_pairs < 1 - threshold).sum(dim=1) > 0
+        valid_pos = (pos_pairs < 1 - pos_thresh).sum(dim=1) > 0
         valid_neg = neg_pairs.sum(dim=1) > 0
         valid = valid_pos & valid_neg
 
@@ -82,23 +96,10 @@ class MultiPrototypeCBMLLoss(nn.Module):
             sigma_ = ((neg_pairs_valid - mean_.view(-1, 1)) ** 2).mean(dim=1) # [num_valid]
             regularization_term = (self.reg_weight * sigma_).mean()
 
-        # normalized prototypes: [num_classes, prototype_per_class, embed_dim]
-        normalized_prototypes = F.normalize(self.prototypes, p=2, dim=2)
-        # normalized weights: [num_classes, prototype_per_class]
-        weights = F.softmax(self.weights, dim=1)
-
-        # compute cosine similarity between each embeddings and all prototypes
-        similarities = self.compute_similarity(
-            normalized_embds, normalized_prototypes.view(-1, self.embed_dim)
-        ) # [batch_size, num_classes * prototype_per_class]
-        similarities = similarities.view(
-            batch_size, self.num_classes, self.prototype_per_class
-        ) # [batch_size, num_classes, prototype_per_class]
-
         # true class prototype
         true_labels = targets # [batch_size]
         # list of all prototype (similarity value) corresponding to each sample in batch
-        pos_prototypes_indices = similarities[torch.arange(batch_size), true_labels] # [batch_size, prototype_per_class]
+        pos_prototypes_indices = pr_embd_sim[torch.arange(batch_size), true_labels] # [batch_size, prototype_per_class]
         # index of most contributed prototype for each sample in batch
         pos_max_prototypes_idx = torch.argmax(pos_prototypes_indices, dim=1) # [batch_size]
         # most contributed prototype (from the class of sample)
@@ -109,7 +110,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         pos_priors = self.class_priors[true_labels] # [batch_size]
 
         # negative prototypes (excluding positive class)
-        all_similarities = similarities.view(batch_size, -1) # [batch_size, num_classes * prototype_per_class]
+        all_similarities = pr_embd_sim.view(batch_size, -1) # [batch_size, num_classes * prototype_per_class]
         mask = torch.ones_like(all_similarities, dtype=torch.bool)
         # compute indices for positive class prototypes for each sample
         pos_class_prototypes_idx = (true_labels.view(-1, 1) * self.prototype_per_class +
