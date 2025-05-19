@@ -125,6 +125,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         loss = (sim_term + bias_term).mean()
 
+        print(f"sim_term: {sim_term.mean().item():.4f}, bias_term: {bias_term.mean().item():.4f}, reg_term: {regularization_term.item():.4f}")
+
         return loss + regularization_term
     
     def compute_accuracy(self, embeddings, targets):
