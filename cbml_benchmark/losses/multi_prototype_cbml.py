@@ -19,7 +19,6 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.reg_weight = cfg.LOSSES.MULTI_PROTOTYPE_CBML.REG_WEIGHT
 
         # initializing parameters
-
         # prototypes: [num_classes, prototype_per_class, embed_dim]
         self.prototypes = nn.Parameter(
             torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim).to(self.device)
@@ -30,7 +29,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.weights = nn.Parameter(
             torch.ones(self.num_classes, self.prototype_per_class).to(self.device) / self.prototype_per_class
         )
-        
+
         # class priors: uniform for simplicity [num_classes]
         self.class_priors = nn.Parameter(
             torch.ones(self.num_classes).to(self.device) / self.num_classes, requires_grad=False
@@ -51,38 +50,31 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # similarity matrix (between all embedding vectors): [batch_size, batch_size]
         embd_embd_sim = torch.matmul(normalized_embds, normalized_embds.t())
         # similarity matrix (between each embeddings and all prototypes): [batch_size, num_classes * prototype_per_class]
-        pr_embd_sim = torch.matmul(normalized_embds, normalized_prototypes.view(-1, self.embed_dim).t()) / self.sigma_sq
+        pr_embd_sim = torch.matmul(normalized_embds, normalized_prototypes.view(-1, self.embed_dim).t())
         pr_embd_sim = pr_embd_sim.view(
             batch_size, self.num_classes, self.prototype_per_class
         )
 
-        # create masks for positive and negative pairs
-        same_class_mask = (targets.view(-1, 1) == targets.view(1, -1)) # [batch_size, batch_size]
-        diff_class_mask = ~same_class_mask
-        # exclude self-similarities (diagonal)
-        self_sim_mask = ~torch.eye(batch_size, dtype=torch.bool, device=self.device)
-        same_class_mask = same_class_mask & self_sim_mask
+        regularization_term = list()
+        for i in range(batch_size):
+            # computing the regularization term
+            pos_pair_ = embd_embd_sim[i][targets == targets[i]]
+            pos_pair_ = pos_pair_[pos_pair_ < 1 - pos_thresh]
+            neg_pair_ = embd_embd_sim[i][targets != targets[i]]
 
-        # extract positive and negative pairs
-        # TODO: if number of positive pairs and negative pairs are not equal ???
-        pos_pairs = embd_embd_sim[same_class_mask].view(batch_size, -1) # [batch_size, num_pos_pairs]
-        neg_pairs = embd_embd_sim[diff_class_mask].view(batch_size, -1) # [batch_size, num_neg_pairs]
+            # TODO: is this needed???
+            if len(neg_pair_) < 1 or len(pos_pair_) < 1:
+                continue
+
+            mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
+            # sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
+            sigma_ = torch.mean(torch.pow(neg_pair_ - mean_, 2))
+            regularization_term.append((sigma_))
         
-        # compute means for valid pairs
-        valid_pos = (pos_pairs < 1 - pos_thresh).sum(dim=1) > 0
-        valid_neg = neg_pairs.sum(dim=1) > 0
-        valid = valid_pos & valid_neg
-
-        if valid.sum() == 0:
-            regularization_term = torch.tensor(0.0, device=self.device)
+        if len(regularization_term) > 0:
+            regularization_term = torch.stack(regularization_term).mean()
         else:
-            pos_mean = pos_pairs[valid].mean(dim=1) # [num_valid]
-            neg_mean = neg_pairs[valid].mean(dim=1) # [num_valid]
-            mean_ = self.hyper_weight * pos_mean + (1 - self.hyper_weight) * neg_mean
-            # compute variance of negative pairs
-            neg_pairs_valid = neg_pairs[valid] # [num_valid, num_neg_pairs]
-            sigma_ = ((neg_pairs_valid - mean_.view(-1, 1)) ** 2).mean(dim=1) # [num_valid]
-            regularization_term = (self.reg_weight * sigma_).mean()
+            regularization_term = torch.tensor(0.0, device=self.device)
 
         # true class prototype
         true_labels = targets # [batch_size]
@@ -125,9 +117,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         loss = (sim_term + bias_term).mean()
 
-        print(f"sim_term: {sim_term.mean().item():.4f}, bias_term: {bias_term.mean().item():.4f}, reg_term: {regularization_term.item():.4f}")
-
-        return loss + regularization_term
+        return loss + self.reg_weight * regularization_term
     
     def compute_accuracy(self, embeddings, targets):
         """
