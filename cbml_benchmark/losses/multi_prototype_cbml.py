@@ -18,16 +18,18 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.hyper_weight = cfg.LOSSES.MULTI_PROTOTYPE_CBML.HYPER_WEIGHT
         self.reg_weight = cfg.LOSSES.MULTI_PROTOTYPE_CBML.REG_WEIGHT
 
+        self.margin = cfg.LOSSES.MULTI_PROTOTYPE_CBML.MARGIN
+
         # initializing parameters
         # prototypes: [num_classes, prototype_per_class, embed_dim]
         self.prototypes = nn.Parameter(
-            torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim).to(self.device)
+            torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim)
         )
-        # self.prototypes.data = F.normalize(self.prototypes.data, p=2, dim=2)
+        self.prototypes.data = F.normalize(self.prototypes.data, p=2, dim=2)
 
         # weights: [num_classes, prototype_per_class]
         self.weights = nn.Parameter(
-            torch.ones(self.num_classes, self.prototype_per_class).to(self.device) / self.prototype_per_class
+            torch.ones(self.num_classes, self.prototype_per_class) / self.prototype_per_class
         )
 
         # class priors: uniform for simplicity [num_classes]
@@ -41,11 +43,11 @@ class MultiPrototypeCBMLLoss(nn.Module):
         batch_size = embeddings.size(0)
 
         # normalized embeddings: [batch_size, embed_dim]
-        normalized_embds = F.normalize(embeddings, p=2, dim=1)
+        normalized_embds = F.normalize(embeddings, p=2, dim=1).cuda()
         # normalized prototypes: [num_classes, prototype_per_class, embed_dim]
-        normalized_prototypes = F.normalize(self.prototypes, p=2, dim=2)
+        normalized_prototypes = F.normalize(self.prototypes, p=2, dim=2).cuda()
         # normalized weights: [num_classes, prototype_per_class]
-        weights = F.softmax(self.weights, dim=1)
+        weights = F.softmax(self.weights, dim=1).cuda()
 
         # similarity matrix (between all embedding vectors): [batch_size, batch_size]
         embd_embd_sim = torch.matmul(normalized_embds, normalized_embds.t())
@@ -62,7 +64,6 @@ class MultiPrototypeCBMLLoss(nn.Module):
             pos_pair_ = pos_pair_[pos_pair_ < 1 - pos_thresh]
             neg_pair_ = embd_embd_sim[i][targets != targets[i]]
 
-            # TODO: is this needed???
             if len(neg_pair_) < 1 or len(pos_pair_) < 1:
                 continue
 
@@ -109,7 +110,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # similarity term
         pos_sim = (normalized_embds * pos_prototypes).sum(dim=1) # [batch_size]
         neg_sim = (normalized_embds * neg_prototypes).sum(dim=1) # [batch_size]
-        sim_term = -1 * (1 / self.sigma_sq) * (pos_sim - neg_sim) # [batch_size]
+        sim_term = (1 / self.sigma_sq) * (pos_sim - neg_sim) # [batch_size]
+        sim_term = F.relu(self.margin - sim_term)
 
         bias_term = -torch.log(
             (pos_priors * pos_weights) / (neg_priors * neg_weights + 1e-8)
@@ -118,7 +120,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         loss = (sim_term + bias_term).mean()
 
         return loss + self.reg_weight * regularization_term
-    
+
     def compute_accuracy(self, embeddings, targets):
         """
         Compute per-batch training accuracy.
