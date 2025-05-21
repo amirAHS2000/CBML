@@ -23,13 +23,13 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # initializing parameters
         # prototypes: [num_classes, prototype_per_class, embed_dim]
         self.prototypes = nn.Parameter(
-            torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim)
+            torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim).to(self.device)
         )
-        self.prototypes.data = F.normalize(self.prototypes.data, p=2, dim=2)
+        # self.prototypes.data = F.normalize(self.prototypes.data, p=2, dim=2)
 
         # weights: [num_classes, prototype_per_class]
         self.weights = nn.Parameter(
-            torch.ones(self.num_classes, self.prototype_per_class) / self.prototype_per_class
+            torch.ones(self.num_classes, self.prototype_per_class).to(self.device) / self.prototype_per_class
         )
 
         # class priors: uniform for simplicity [num_classes]
@@ -38,16 +38,19 @@ class MultiPrototypeCBMLLoss(nn.Module):
         )
 
     def forward(self, embeddings, targets):
+        embeddings = embeddings.to(self.device)
+        targets = targets.to(self.device)
+
         # threshold used for choosing positive samples
         pos_thresh = 1e-5
         batch_size = embeddings.size(0)
 
         # normalized embeddings: [batch_size, embed_dim]
-        normalized_embds = F.normalize(embeddings, p=2, dim=1).cuda()
+        normalized_embds = F.normalize(embeddings, p=2, dim=1)
         # normalized prototypes: [num_classes, prototype_per_class, embed_dim]
-        normalized_prototypes = F.normalize(self.prototypes, p=2, dim=2).cuda()
+        normalized_prototypes = F.normalize(self.prototypes, p=2, dim=2)
         # normalized weights: [num_classes, prototype_per_class]
-        weights = F.softmax(self.weights, dim=1).cuda()
+        weights = F.softmax(self.weights, dim=1)
 
         # similarity matrix (between all embedding vectors): [batch_size, batch_size]
         embd_embd_sim = torch.matmul(normalized_embds, normalized_embds.t())
@@ -102,7 +105,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         masked_similarities = all_similarities.masked_fill(~mask, float('-inf'))
         neg_class_idxs = torch.argmax(masked_similarities, dim=1) # [batch_size]
         neg_class = neg_class_idxs // self.prototype_per_class # [batch_size]
-        neg_class_prototype_idx = neg_class % self.prototype_per_class # [batch_size]
+        neg_class_prototype_idx = neg_class_idxs % self.prototype_per_class # [batch_size]
         neg_prototypes = normalized_prototypes[neg_class, neg_class_prototype_idx] # [batch_size, embed_dim]
         neg_weights = weights[neg_class, neg_class_prototype_idx] # [batch_size]
         neg_priors = self.class_priors[neg_class] # [batch_size]
