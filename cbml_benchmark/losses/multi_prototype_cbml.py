@@ -23,106 +23,118 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # initializing parameters
         # prototypes: [num_classes, prototype_per_class, embed_dim]
         self.prototypes = nn.Parameter(
-            torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim).to(self.device)
+            torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
         )
-        # self.prototypes.data = F.normalize(self.prototypes.data, p=2, dim=2)
+        self.prototypes.data = F.normalize(self.prototypes.data, p=2, dim=2)
 
         # weights: [num_classes, prototype_per_class]
         self.weights = nn.Parameter(
-            torch.ones(self.num_classes, self.prototype_per_class).to(self.device) / self.prototype_per_class
+            torch.ones(self.num_classes, self.prototype_per_class, device=self.device) / self.prototype_per_class
         )
 
         # class priors: uniform for simplicity [num_classes]
         self.class_priors = nn.Parameter(
-            torch.ones(self.num_classes).to(self.device) / self.num_classes, requires_grad=False
+            torch.ones(self.num_classes, device=self.device) / self.num_classes, requires_grad=False
         )
 
     def forward(self, embeddings, targets):
         embeddings = embeddings.to(self.device)
         targets = targets.to(self.device)
 
-        # threshold used for choosing positive samples
-        pos_thresh = 1e-5
+        # pos_thresh = 1e-5
         batch_size = embeddings.size(0)
-
-        # normalized embeddings: [batch_size, embed_dim]
-        normalized_embds = F.normalize(embeddings, p=2, dim=1)
-        # normalized prototypes: [num_classes, prototype_per_class, embed_dim]
-        normalized_prototypes = F.normalize(self.prototypes, p=2, dim=2)
-        # normalized weights: [num_classes, prototype_per_class]
-        weights = F.softmax(self.weights, dim=1)
-
-        # similarity matrix (between all embedding vectors): [batch_size, batch_size]
-        embd_embd_sim = torch.matmul(normalized_embds, normalized_embds.t())
-        # similarity matrix (between each embeddings and all prototypes): [batch_size, num_classes * prototype_per_class]
-        pr_embd_sim = torch.matmul(normalized_embds, normalized_prototypes.view(-1, self.embed_dim).t())
-        pr_embd_sim = pr_embd_sim.view(
-            batch_size, self.num_classes, self.prototype_per_class
-        )
-
-        regularization_term = list()
-        for i in range(batch_size):
-            # computing the regularization term
-            pos_pair_ = embd_embd_sim[i][targets == targets[i]]
-            pos_pair_ = pos_pair_[pos_pair_ < 1 - pos_thresh]
-            neg_pair_ = embd_embd_sim[i][targets != targets[i]]
-
-            if len(neg_pair_) < 1 or len(pos_pair_) < 1:
-                continue
-
-            mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
-            # sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
-            sigma_ = torch.mean(torch.pow(neg_pair_ - mean_, 2))
-            regularization_term.append((sigma_))
         
-        if len(regularization_term) > 0:
-            regularization_term = torch.stack(regularization_term).mean()
-        else:
-            regularization_term = torch.tensor(0.0, device=self.device)
+        # normalization
+        normalized_embds = F.normalize(embeddings, p=2, dim=1).to(self.device) # [B, D]
+        normalized_protos = F.normalize(self.prototypes, p=2, dim=2).to(self.device) # [C, K, D]
+        weights = F.softmax(self.weights, dim=1).to(self.device) # [C, K]
+        
+        # similarity matrices
+        # embd_embd_sim = torch.matmul(normalized_embds, normalized_embds.t())
+        # proto_embd_sim = torch.matmul(normalized_embds, normalized_protos.view(-1, self.embed_dim).t())
+        # proto_embd_sim = proto_embd_sim.view(
+        #     batch_size, self.num_classes, self.prototype_per_class
+        # )
 
-        # true class prototype
-        true_labels = targets # [batch_size]
-        # list of all prototype (similarity value) corresponding to each sample in batch
-        pos_prototypes_indices = pr_embd_sim[torch.arange(batch_size), true_labels] # [batch_size, prototype_per_class]
-        # index of most contributed prototype for each sample in batch
-        pos_max_prototypes_idx = torch.argmax(pos_prototypes_indices, dim=1) # [batch_size]
-        # most contributed prototype (from the class of sample)
-        pos_prototypes = normalized_prototypes[true_labels, pos_max_prototypes_idx] # [batch_size, embed_dim]
-        # weights corresponding to each positive prototypes
-        pos_weights = weights[true_labels, pos_max_prototypes_idx] # [batch_size]
-        # positive class priors
-        pos_priors = self.class_priors[true_labels] # [batch_size]
+        # # regularization
+        # regularization_term = list()
+        # for i in range(batch_size):
+        #     # computing the regularization term
+        #     pos_pair_ = embd_embd_sim[i][targets == targets[i]]
+        #     pos_pair_ = pos_pair_[pos_pair_ < 1 - pos_thresh]
+        #     neg_pair_ = embd_embd_sim[i][targets != targets[i]]
 
-        # negative prototypes (excluding positive class)
-        all_similarities = pr_embd_sim.view(batch_size, -1) # [batch_size, num_classes * prototype_per_class]
-        mask = torch.ones_like(all_similarities, dtype=torch.bool)
-        # compute indices for positive class prototypes for each sample
-        pos_class_prototypes_idx = (true_labels.view(-1, 1) * self.prototype_per_class +
-                                    torch.arange(self.prototype_per_class, device=self.device).view(1, -1)) # [batch_size, prototype_per_class]
-        flatten_idxs = pos_class_prototypes_idx.view(-1) # [batch_size * prototype_per_class]
-        batch_idxs = torch.arange(batch_size, device=self.device).repeat_interleave(self.prototype_per_class)
-        mask[batch_idxs, flatten_idxs] = False
-        masked_similarities = all_similarities.masked_fill(~mask, float('-inf'))
-        neg_class_idxs = torch.argmax(masked_similarities, dim=1) # [batch_size]
-        neg_class = neg_class_idxs // self.prototype_per_class # [batch_size]
-        neg_class_prototype_idx = neg_class_idxs % self.prototype_per_class # [batch_size]
-        neg_prototypes = normalized_prototypes[neg_class, neg_class_prototype_idx] # [batch_size, embed_dim]
-        neg_weights = weights[neg_class, neg_class_prototype_idx] # [batch_size]
-        neg_priors = self.class_priors[neg_class] # [batch_size]
+        #     if len(neg_pair_) < 1 or len(pos_pair_) < 1:
+        #         continue
 
-        # similarity term
-        pos_sim = (normalized_embds * pos_prototypes).sum(dim=1) # [batch_size]
-        neg_sim = (normalized_embds * neg_prototypes).sum(dim=1) # [batch_size]
-        sim_term = (1 / self.sigma_sq) * (pos_sim - neg_sim) # [batch_size]
-        sim_term = F.relu(self.margin - sim_term)
+        #     mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
+        #     # sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
+        #     sigma_ = torch.mean(torch.pow(neg_pair_ - mean_, 2))
+        #     regularization_term.append((sigma_))
+        
+        # if len(regularization_term) > 0:
+        #     regularization_term = torch.stack(regularization_term).mean()
+        # else:
+        #     regularization_term = torch.tensor(0.0, device=self.device)
+        
 
-        bias_term = -torch.log(
-            (pos_priors * pos_weights) / (neg_priors * neg_weights + 1e-8)
-        ) # [batch_size]
+        total_loss = 0.0
+        # for each sample, find pos and neg prototype and compute its loss
+        for i in range(batch_size):
+            x = normalized_embds[i] # [D]
+            y = targets[i].item() # true class
 
-        loss = (sim_term + bias_term).mean()
+            # positive prototype selection
+            best_pos_sim = None
+            best_pos_proto = 0
+            for k in range(self.prototype_per_class):
+                proto = normalized_protos[y][k] # [D]
+                sim = torch.dot(x, proto)
 
-        return loss + self.reg_weight * regularization_term
+                if best_pos_sim is None or sim.item() > best_pos_sim.item():
+                    best_pos_sim = sim
+                    best_pos_proto = k
+
+            mu_pos = normalized_protos[y][best_pos_proto] # [D]
+            w_pos = weights[y, best_pos_proto]
+            prior_pos = self.class_priors[y]
+            pos_sim = best_pos_sim
+
+            # negative prototype selection
+            best_neg_sim = None
+            best_neg_class = None
+            best_neg_proto = 0
+            for c in range(self.num_classes):
+                if c == y:
+                    continue
+                for k in range(self.prototype_per_class):
+                    proto = normalized_protos[c][k]
+                    sim = torch.dot(x, proto)
+                    if best_neg_sim is None or sim.item() > best_neg_sim.item():
+                        best_neg_sim = sim
+                        best_neg_class = c
+                        best_neg_proto = k
+
+            mu_neg = normalized_protos[best_neg_class][best_neg_proto] # [D]
+            w_neg = weights[best_neg_class, best_neg_proto]
+            prior_neg = self.class_priors[best_neg_class]
+            neg_sim = best_neg_sim
+
+            # build loss terms
+            # similarity
+            sim_term = (1.0 / self.sigma_sq) * (pos_sim - neg_sim)
+
+            # bias
+            eps = 1e-9
+            # assume prior_pos, w_pos, prior_neg, w_neg are PyTorch scalars/tensors on the right device
+            bias_term = (torch.log(prior_pos + eps) + torch.log(w_pos + eps)
+                         - torch.log(prior_neg + eps) - torch.log(w_neg + eps))
+            total_loss += (sim_term + bias_term)
+
+        # average and add regularization
+        loss = -total_loss / batch_size
+        # loss = loss + self.reg_weight * regularization_term
+        return loss
 
     def compute_accuracy(self, embeddings, targets):
         """
