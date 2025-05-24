@@ -25,7 +25,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.prototypes = nn.Parameter(
             torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
         )
-        self.prototypes.data = F.normalize(self.prototypes.data, p=2, dim=2)
+        # self.prototypes.data = F.normalize(self.prototypes.data, p=2, dim=2)
 
         # weights: [num_classes, prototype_per_class]
         self.weights = nn.Parameter(
@@ -41,41 +41,41 @@ class MultiPrototypeCBMLLoss(nn.Module):
         embeddings = embeddings.to(self.device)
         targets = targets.to(self.device)
 
-        # pos_thresh = 1e-5
+        pos_thresh = 1e-5
         batch_size = embeddings.size(0)
         
         # normalization
-        normalized_embds = F.normalize(embeddings, p=2, dim=1).to(self.device) # [B, D]
-        normalized_protos = F.normalize(self.prototypes, p=2, dim=2).to(self.device) # [C, K, D]
-        weights = F.softmax(self.weights, dim=1).to(self.device) # [C, K]
+        normalized_embds = F.normalize(embeddings, p=2, dim=1) # [B, D]
+        normalized_protos = F.normalize(self.prototypes, p=2, dim=2) # [C, K, D]
+        weights = F.softmax(self.weights, dim=1) # [C, K]
         
         # similarity matrices
-        # embd_embd_sim = torch.matmul(normalized_embds, normalized_embds.t())
-        # proto_embd_sim = torch.matmul(normalized_embds, normalized_protos.view(-1, self.embed_dim).t())
-        # proto_embd_sim = proto_embd_sim.view(
-        #     batch_size, self.num_classes, self.prototype_per_class
-        # )
+        embd_embd_sim = torch.matmul(normalized_embds, normalized_embds.t())
+        proto_embd_sim = torch.matmul(normalized_embds, normalized_protos.view(-1, self.embed_dim).t())
+        proto_embd_sim = proto_embd_sim.view(
+            batch_size, self.num_classes, self.prototype_per_class
+        )
 
-        # # regularization
-        # regularization_term = list()
-        # for i in range(batch_size):
-        #     # computing the regularization term
-        #     pos_pair_ = embd_embd_sim[i][targets == targets[i]]
-        #     pos_pair_ = pos_pair_[pos_pair_ < 1 - pos_thresh]
-        #     neg_pair_ = embd_embd_sim[i][targets != targets[i]]
+        # regularization
+        regularization_term = list()
+        for i in range(batch_size):
+            # computing the regularization term
+            pos_pair_ = embd_embd_sim[i][targets == targets[i]]
+            pos_pair_ = pos_pair_[pos_pair_ < 1 - pos_thresh]
+            neg_pair_ = embd_embd_sim[i][targets != targets[i]]
 
-        #     if len(neg_pair_) < 1 or len(pos_pair_) < 1:
-        #         continue
+            if len(neg_pair_) < 1 or len(pos_pair_) < 1:
+                continue
 
-        #     mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
-        #     # sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
-        #     sigma_ = torch.mean(torch.pow(neg_pair_ - mean_, 2))
-        #     regularization_term.append((sigma_))
+            mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
+            # sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
+            sigma_ = torch.mean(torch.pow(neg_pair_ - mean_, 2))
+            regularization_term.append((sigma_))
         
-        # if len(regularization_term) > 0:
-        #     regularization_term = torch.stack(regularization_term).mean()
-        # else:
-        #     regularization_term = torch.tensor(0.0, device=self.device)
+        if len(regularization_term) > 0:
+            regularization_term = torch.stack(regularization_term).mean()
+        else:
+            regularization_term = torch.tensor(0.0, device=self.device)
         
 
         total_loss = 0.0
@@ -84,41 +84,36 @@ class MultiPrototypeCBMLLoss(nn.Module):
             x = normalized_embds[i] # [D]
             y = targets[i].item() # true class
 
-            # positive prototype selection
-            best_pos_sim = None
-            best_pos_proto = 0
-            for k in range(self.prototype_per_class):
-                proto = normalized_protos[y][k] # [D]
-                sim = torch.dot(x, proto)
+            # extract the [k] similarities for the true class y
+            pos_sim_protos = proto_embd_sim[i, y, :]
 
-                if best_pos_sim is None or sim.item() > best_pos_sim.item():
-                    best_pos_sim = sim
-                    best_pos_proto = k
+            # find the index of the best positive prototype
+            best_pos_proto_idx = torch.argmax(pos_sim_protos).item() # python int
 
-            mu_pos = normalized_protos[y][best_pos_proto] # [D]
-            w_pos = weights[y, best_pos_proto]
+            # grab the its similarity, weight, and prior
+            pos_sim = pos_sim_protos[best_pos_proto_idx]
+            pos_proto = normalized_protos[y, best_pos_proto_idx]
+            w_pos = weights[y, best_pos_proto_idx]
             prior_pos = self.class_priors[y]
-            pos_sim = best_pos_sim
 
-            # negative prototype selection
-            best_neg_sim = None
-            best_neg_class = None
-            best_neg_proto = 0
-            for c in range(self.num_classes):
-                if c == y:
-                    continue
-                for k in range(self.prototype_per_class):
-                    proto = normalized_protos[c][k]
-                    sim = torch.dot(x, proto)
-                    if best_neg_sim is None or sim.item() > best_neg_sim.item():
-                        best_neg_sim = sim
-                        best_neg_class = c
-                        best_neg_proto = k
+            # for negatives, mask out the true class
+            # take all classes except y, flatten them along K
+            all_sim = proto_embd_sim[i] # [C, K]
+            mask = torch.ones_like(all_sim, dtype=torch.bool)
+            mask[y, :] = False # zero out true class row
 
-            mu_neg = normalized_protos[best_neg_class][best_neg_proto] # [D]
-            w_neg = weights[best_neg_class, best_neg_proto]
+            # apply the mask and find the flat argmax
+            neg_sim_flat = all_sim.masked_fill(~mask, float('-inf')).view(-1) # [C * K]
+            neg_idx_flat = torch.argmax(neg_sim_flat).item() # int in [0 .. C * K)
+
+            # convert that flat index back to (class, prototype) via divmod
+            best_neg_class, best_neg_proto_idx = divmod(neg_idx_flat, self.prototype_per_class)
+
+            # grab its similarity, weight, and prior
+            neg_sim = all_sim[best_neg_class, best_neg_proto_idx]
+            neg_proto = normalized_protos[best_neg_class, best_neg_proto_idx]
+            w_neg = weights[best_neg_class, best_neg_proto_idx]
             prior_neg = self.class_priors[best_neg_class]
-            neg_sim = best_neg_sim
 
             # build loss terms
             # similarity
@@ -133,26 +128,5 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         # average and add regularization
         loss = -total_loss / batch_size
-        # loss = loss + self.reg_weight * regularization_term
+        loss = loss + self.reg_weight * regularization_term
         return loss
-
-    def compute_accuracy(self, embeddings, targets):
-        """
-        Compute per-batch training accuracy.
-        """
-        # normalized embeddings [batch_size, embed_dim]
-        normalized_embds = F.normalize(embeddings, p=2, dim=1)
-        # normalized prototypes
-        normalized_prototypes = F.normalize(self.prototypes, p=2, dim=2)
-        flatten_prototypes = normalized_prototypes.view(-1, self.embed_dim) # [num_classes * prototype_per_class, embed_dim]
-
-        # compute cosine similarities: [batch_size, num_classes * prototype_per_class]
-        similarities = normalized_embds @ flatten_prototypes.t()
-        # get prototypes with highest similarity (indices of prototypes)
-        high_sim_prototype_idxs = similarities.argmax(dim=1)
-        # map these indices to class indices (predicted classes)
-        pred_classes = high_sim_prototype_idxs // self.prototype_per_class
-        # compute accuracy
-        correct = (pred_classes == targets).float().sum()
-        accuracy = correct / embeddings.size(0)
-        return accuracy
