@@ -12,15 +12,17 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.num_classes = cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES
         self.prototype_per_class = cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS
         self.embed_dim = cfg.MODEL.HEAD.DIM
-        self.sigma_sq = cfg.LOSSES.MULTI_PROTOTYPE_CBML.SIGMA_SQ
         self.device = torch.device(cfg.MODEL.DEVICE)
 
         self.hyper_weight = cfg.LOSSES.MULTI_PROTOTYPE_CBML.HYPER_WEIGHT
         self.reg_weight = cfg.LOSSES.MULTI_PROTOTYPE_CBML.REG_WEIGHT
 
-        self.margin = cfg.LOSSES.MULTI_PROTOTYPE_CBML.MARGIN
-
         # initializing parameters
+        # theta = log(beta) and beta = 1 / sigma_sq
+        self.theta = nn.Parameter(
+            torch.tensor(0.0, device=self.device)
+        )
+
         # prototypes: [num_classes, prototype_per_class, embed_dim]
         self.prototypes = nn.Parameter(
             torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
@@ -47,8 +49,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # normalization
         normalized_embds = F.normalize(embeddings, p=2, dim=1) # [B, D]
         normalized_protos = F.normalize(self.prototypes, p=2, dim=2) # [C, K, D]
-        weights = F.softmax(self.weights, dim=1) # [C, K]
-        
+        # weights = F.softmax(self.weights, dim=1) # [C, K]
+        weights = self.weights - (self.weights.sum(dim=1, keepdim=True) - 1) / self.prototype_per_class
+
         # similarity matrices
         embd_embd_sim = torch.matmul(normalized_embds, normalized_embds.t())
         proto_embd_sim = torch.matmul(normalized_embds, normalized_protos.view(-1, self.embed_dim).t())
@@ -117,7 +120,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
             # build loss terms
             # similarity
-            sim_term = (1.0 / self.sigma_sq) * (pos_sim - neg_sim)
+            sim_term = torch.exp(self.theta) * (pos_sim - neg_sim)
 
             # bias
             eps = 1e-9
