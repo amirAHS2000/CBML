@@ -36,7 +36,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         # class priors: uniform for simplicity [num_classes]
         self.class_priors = nn.Parameter(
-            torch.ones(self.num_classes, device=self.device) / self.num_classes, requires_grad=False
+            torch.tensor(cfg.LOSSES.MULTI_PROTOTYPE_CBML.CLASS_PRIORS, device=self.device),
+            requires_grad=False
         )
 
     def forward(self, embeddings, targets):
