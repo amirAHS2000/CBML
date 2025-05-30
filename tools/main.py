@@ -1,4 +1,4 @@
-
+import json
 import argparse
 import torch
 
@@ -100,6 +100,14 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
     cfg.merge_from_file(args.cfg_file)
+
+    with open('resource/datasets/CUB_200_2011/class_counts.json', 'r') as fp:
+        class_counts = json.load(fp)
+    total = sum(class_counts.values())
+    # assuming classes are stored as string keys "0", "1", ..., ensure correct order:
+    priors = [class_counts.get(str(i), 0) / total for i in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES)]
+    cfg.LOSSES.MULTI_PROTOTYPE_CBML.CLASS_PRIORS = priors
+
     if args.train_test == 'train':
         train(cfg)
     else:
