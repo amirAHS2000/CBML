@@ -22,10 +22,9 @@ LOSSES:
   NAME: 'multi_prototype_cbml'
   MULTI_PROTOTYPE_CBML:
     N_CLASSES: 100
-    PROTOTYPE_PER_CLASS: 3
+    PROTOTYPE_PER_CLASS: 4
     HYPER_WEIGHT: 0.1
     REG_WEIGHT: 1.0
-    MARGIN: 1.0
     
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt
