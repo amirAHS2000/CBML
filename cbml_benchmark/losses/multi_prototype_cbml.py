@@ -19,9 +19,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         # initializing parameters
         # theta = log(beta) and beta = 1 / sigma_sq
-        self.theta = nn.Parameter(
-            torch.tensor(2.0, device=self.device)
-        )
+        # self.theta = nn.Parameter(
+        #     torch.tensor(2.0, device=self.device)
+        # )
 
         # prototypes: [num_classes, prototype_per_class, embed_dim]
         self.prototypes = nn.Parameter(
@@ -41,8 +41,10 @@ class MultiPrototypeCBMLLoss(nn.Module):
         )
 
     def forward(self, embeddings, targets):
-        embeddings = embeddings.to(self.device)
-        targets = targets.to(self.device)
+        if embeddings.device != self.device:
+            embeddings = embeddings.to(self.device)
+        if targets.device != self.device:
+            targets = targets.to(self.device)
 
         pos_thresh = 1e-5
         batch_size = embeddings.size(0)
@@ -50,8 +52,10 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # normalization
         normalized_embds = F.normalize(embeddings, p=2, dim=1) # [B, D]
         normalized_protos = F.normalize(self.prototypes, p=2, dim=2) # [C, K, D]
-        # weights = F.softmax(self.weights, dim=1) # [C, K]
-        weights = self.weights - (self.weights.sum(dim=1, keepdim=True) - 1.0) / self.prototype_per_class
+
+        # with the second initialization (not softmax) we might get some negative weights during training
+        weights = F.softmax(self.weights, dim=1) # [C, K]
+        # weights = self.weights - (self.weights.sum(dim=1, keepdim=True) - 1.0) / self.prototype_per_class
 
         # similarity matrices
         embd_embd_sim = torch.matmul(normalized_embds, normalized_embds.t())
@@ -121,8 +125,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
             # build loss terms
             # similarity
-            sim_term = torch.exp(self.theta) * (pos_sim - neg_sim)
-            # sim_term = 10 * (pos_sim - neg_sim)
+            # sim_term = torch.exp(self.theta) * (pos_sim - neg_sim)
+            sim_term = 10 * (pos_sim - neg_sim)
 
             # bias
             eps = 1e-9
@@ -131,7 +135,6 @@ class MultiPrototypeCBMLLoss(nn.Module):
                          - torch.log(prior_neg + eps) - torch.log(w_neg + eps))
             total_loss += (sim_term + bias_term)
 
-        print("1/sigma_sq: {}".format(torch.exp(self.theta)))
         # average and add regularization
         loss = -total_loss / batch_size
         loss = loss + self.reg_weight * regularization_term
