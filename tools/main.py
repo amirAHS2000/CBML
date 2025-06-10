@@ -1,6 +1,7 @@
 import json
 import argparse
 import torch
+import torch.nn.functional as F
 
 from cbml_benchmark.config import cfg
 from cbml_benchmark.data import build_data
@@ -10,6 +11,8 @@ from cbml_benchmark.modeling import build_model
 from cbml_benchmark.solver import build_lr_scheduler, build_optimizer
 from cbml_benchmark.utils.logger import setup_logger
 from cbml_benchmark.utils.checkpoint import Checkpointer
+
+from cbml_benchmark.utils.prototype_initializer import initialize_prototypes_random, initialize_prototypes_mean, initialize_prototypes_minibatch_kmeans
 
 
 def train(cfg):
@@ -23,6 +26,42 @@ def train(cfg):
     criterion_aux = None
     if cfg.LOSSES.NAME_AUX != '':
         criterion_aux = build_aux_loss(cfg)
+
+    # initializing prototypes if using multi_prototype_cbml loss
+    if cfg.LOSSES.NAME == 'multi_prototype_cbml':
+        logger.info(f"Initializing prototypes using {cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD}...")
+        train_loader = build_data(cfg, is_train=True)
+
+        if cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'minibatch_kmeans':
+            prototypes = initialize_prototypes_minibatch_kmeans(
+                train_loader=train_loader,
+                model=model,
+                num_classes=cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
+                prototype_per_class=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
+                device=device
+            )
+        elif cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'mean':
+            prototypes = initialize_prototypes_mean(
+                train_loader=train_loader,
+                model=model,
+                num_classes=cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
+                prototype_per_class=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
+                device=device
+            )
+        elif cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'random':
+            prototypes = initialize_prototypes_random(
+                num_classes=cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
+                prototype_per_class=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
+                embed_dim=cfg.LOSSES.MODEL.HEAD.DIM,
+                device=device
+            )
+        else:
+            raise ValueError(f"Unknown initializing method: {cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD}")
+
+        # normalize the prototypes
+        prototypes = F.normalize(prototypes, p=2, dim=2)
+        criterion.set_prototypes(prototypes)
+        logger.info("Prototype initialization complete.")
 
     loss_param = None
     if cfg.LOSSES.NAME == 'softtriple_loss' or cfg.LOSSES.NAME == 'proxynca_loss' or cfg.LOSSES.NAME == 'center_loss' or cfg.LOSSES.NAME == 'adv_loss' or cfg.LOSSES.NAME == 'multi_prototype_cbml':
