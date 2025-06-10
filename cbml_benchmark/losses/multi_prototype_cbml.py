@@ -24,10 +24,14 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # )
 
         # prototypes: [num_classes, prototype_per_class, embed_dim]
+        # self.prototypes = nn.Parameter(
+        #     torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
+        # )
+        # self.prototypes.data = F.normalize(self.prototypes.data, p=2, dim=2)
+
         self.prototypes = nn.Parameter(
-            torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
+            torch.zeros(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
         )
-        self.prototypes.data = F.normalize(self.prototypes.data, p=2, dim=2)
 
         # weights: [num_classes, prototype_per_class]
         self.weights = nn.Parameter(
@@ -39,6 +43,10 @@ class MultiPrototypeCBMLLoss(nn.Module):
             torch.tensor(cfg.LOSSES.MULTI_PROTOTYPE_CBML.CLASS_PRIORS, device=self.device),
             requires_grad=False
         )
+
+    def set_prototypes(self, prototypes):
+        with torch.no_grad():
+            self.prototypes.data.copy_(prototypes)
 
     def forward(self, embeddings, targets):
         if embeddings.device != self.device:
@@ -126,7 +134,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
             # build loss terms
             # similarity
             # sim_term = torch.exp(self.theta) * (pos_sim - neg_sim)
-            sim_term = 10 * (pos_sim - neg_sim)
+            sim_term = 10.0 * (pos_sim - neg_sim)
 
             # bias
             eps = 1e-9
