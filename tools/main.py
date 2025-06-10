@@ -32,7 +32,7 @@ def train(cfg):
         logger.info(f"Initializing prototypes using {cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD}...")
         train_loader = build_data(cfg, is_train=True)
 
-        if cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'minibatch_kmeans':
+        if cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'kmeans':
             prototypes = initialize_prototypes_minibatch_kmeans(
                 train_loader=train_loader,
                 model=model,
