@@ -21,7 +21,7 @@ SOLVER:
 LOSSES:
   NAME: 'multi_prototype_cbml'
   MULTI_PROTOTYPE_CBML:
-    INIT_METHOD: 'minibatch_kmeans'
+    INIT_METHOD: 'kmeans'
     N_CLASSES: 100
     PROTOTYPE_PER_CLASS: 4
     HYPER_WEIGHT: 0.1
