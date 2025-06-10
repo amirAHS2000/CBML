@@ -28,7 +28,7 @@ _C.SAVE_DIR = 'output'
 
 # loss
 _C.LOSSES = CN()
-_C.LOSSES.NAME = 'cbml_loss'
+_C.LOSSES.NAME = 'multi_prototype_cbml'
 _C.LOSSES.NAME_AUX = ''
 _C.LOSSES.AUX_WEIGHT = 0.01
 
@@ -48,6 +48,7 @@ _C.LOSSES.CBML_LOSS.TYPE = 'log' # log or sqrt or constant
 
 # multi_prototype_cbml
 _C.LOSSES.MULTI_PROTOTYPE_CBML = CN()
+_C.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD = 'minibatch_kmeans'
 _C.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES = 100 # CUB-200-2011 training classes
 _C.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS = 4
 _C.LOSSES.MULTI_PROTOTYPE_CBML.HYPER_WEIGHT = 0.1
