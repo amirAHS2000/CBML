@@ -31,7 +31,6 @@ def train(cfg):
     # initializing prototypes if using multi_prototype_cbml loss
     if cfg.LOSSES.NAME == 'multi_prototype_cbml':
         logger.info(f"Initializing prototypes using {cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD}...")
-        train_loader = build_data(cfg, is_train=True)
 
         if cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'kmeans':
             prototypes = initialize_prototypes_kmeans(
@@ -39,13 +38,14 @@ def train(cfg):
                 cfg=cfg
             )
         elif cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'mean':
-            prototypes = initialize_prototypes_mean(
-                train_loader=train_loader,
-                model=model,
-                num_classes=cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
-                prototype_per_class=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
-                device=device
-            )
+            pass # TODO change the 'initialize_prototypes_mean' function to use its own dataloader
+            # prototypes = initialize_prototypes_mean(
+            #     train_loader=train_loader,
+            #     model=model,
+            #     num_classes=cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
+            #     prototype_per_class=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
+            #     device=device
+            # )
         elif cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'random':
             prototypes = initialize_prototypes_random(
                 num_classes=cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
@@ -74,10 +74,10 @@ def train(cfg):
     optimizer = build_optimizer(cfg, model, loss_param=loss_param)
     scheduler = build_lr_scheduler(cfg, optimizer)
 
-    if 'train_loader' in locals():
-        del train_loader
-        torch.cuda.empty_cache()
-        gc.collect()
+    # if 'train_loader' in locals():
+    #     del train_loader
+    #     torch.cuda.empty_cache()
+    #     gc.collect()
 
     train_loader = build_data(cfg, is_train=True)
     val_loader = build_data(cfg, is_train=False)
