@@ -77,9 +77,14 @@ def initialize_prototypes_kmeans(model, cfg):
     
     with open(cfg.DATA.TRAIN_IMG_SOURCE, 'r') as f:
         for line in f:
-            _path, _label = re.split(r",| ", line.strip())
-            img = read_image(_path, mode=cfg.INPUT.MODE)
-            img_class_dict[int(_label)].append(transforms(img))
+            try:
+                _path, _label = re.split(r",| ", line.strip())
+                base_dir = os.path.dirname(cfg.DATA.TRAIN_IMG_SOURCE)
+                actual_path = os.path.join(base_dir, _path)
+                img = read_image(actual_path, mode=cfg.INPUT.MODE)
+                img_class_dict[int(_label)].append(transforms(img))
+            except Exception as e:
+                print(f"Error loading image {_path}: {e}")
 
     prototypes = torch.zeros(
         cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
