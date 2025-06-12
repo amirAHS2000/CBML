@@ -46,7 +46,12 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
     def set_prototypes(self, prototypes):
         with torch.no_grad():
-            self.prototypes.data.copy_(prototypes)
+            if prototypes.device != self.device:
+                prototypes = prototypes.to(self.device)
+            self.prototypes.data = prototypes # use assignment instead of copy_
+
+            # clear any cached memory
+            torch.cuda.empty_cache()
 
     def forward(self, embeddings, targets):
         if embeddings.device != self.device:

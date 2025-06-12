@@ -1,3 +1,4 @@
+import gc
 import json
 import argparse
 import torch
@@ -12,7 +13,7 @@ from cbml_benchmark.solver import build_lr_scheduler, build_optimizer
 from cbml_benchmark.utils.logger import setup_logger
 from cbml_benchmark.utils.checkpoint import Checkpointer
 
-from cbml_benchmark.utils.prototype_initializer import initialize_prototypes_random, initialize_prototypes_mean, initialize_prototypes_minibatch_kmeans
+from cbml_benchmark.utils.prototype_initializer import initialize_prototypes_random, initialize_prototypes_mean, initialize_prototypes_kmeans
 
 
 def train(cfg):
@@ -33,12 +34,9 @@ def train(cfg):
         train_loader = build_data(cfg, is_train=True)
 
         if cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'kmeans':
-            prototypes = initialize_prototypes_minibatch_kmeans(
-                train_loader=train_loader,
+            prototypes = initialize_prototypes_kmeans(
                 model=model,
-                num_classes=cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
-                prototype_per_class=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
-                device=device
+                cfg=cfg
             )
         elif cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'mean':
             prototypes = initialize_prototypes_mean(
@@ -61,6 +59,10 @@ def train(cfg):
         # normalize the prototypes
         prototypes = F.normalize(prototypes, p=2, dim=2)
         criterion.set_prototypes(prototypes)
+        # clear the orginal prototypes tensor
+        del prototypes
+        torch.cuda.empty_cache()
+        gc.collect()
         logger.info("Prototype initialization complete.")
 
     loss_param = None
@@ -69,8 +71,13 @@ def train(cfg):
     if cfg.LOSSES.NAME_AUX == 'softtriple_loss' or cfg.LOSSES.NAME_AUX == 'proxynca_loss' or cfg.LOSSES.NAME_AUX == 'center_loss' or cfg.LOSSES.NAME_AUX == 'adv_loss':
         loss_param = criterion_aux
 
-    optimizer = build_optimizer(cfg, model,loss_param=loss_param)
+    optimizer = build_optimizer(cfg, model, loss_param=loss_param)
     scheduler = build_lr_scheduler(cfg, optimizer)
+
+    if 'train_loader' in locals():
+        del train_loader
+        torch.cuda.empty_cache()
+        gc.collect()
 
     train_loader = build_data(cfg, is_train=True)
     val_loader = build_data(cfg, is_train=False)
