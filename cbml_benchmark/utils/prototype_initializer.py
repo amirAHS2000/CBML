@@ -73,21 +73,9 @@ def initialize_prototypes_kmeans(model, cfg):
         normalize_transform,
     ])
 
-    # a dictionary contains each class data based on class label
-    img_class_dict = {cls: [] for cls in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES)}
-    
-    with open(cfg.DATA.TRAIN_IMG_SOURCE, 'r') as f:
-        for line in f:
-            try:
-                _path, _label = re.split(r",| ", line.strip())
-                base_dir = os.path.dirname(cfg.DATA.TRAIN_IMG_SOURCE)
-                actual_path = os.path.join(base_dir, _path)
-                img = read_image(actual_path, mode=cfg.INPUT.MODE)
-                img_class_dict[int(_label)].append(transforms(img))
-                # clean up the loaded image immediately
-                del img
-            except Exception as e:
-                print(f"Error loading image {_path}: {e}")
+
+    img_path_cls = {cls: [] for cls in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES)}
+    BASE_DIR = os.path.dirname(cfg.DATA.TRAIN_IMG_SOURCE)
 
     prototypes = torch.zeros(
         cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
@@ -96,8 +84,17 @@ def initialize_prototypes_kmeans(model, cfg):
         device=cfg.MODEL.DEVICE
     )
 
+    with open(cfg.DATA.TRAIN_IMG_SOURCE, 'r') as f:
+        for line in f:
+            try:
+                path, label = re.split(r",| ", line.strip())
+                actual_path = os.path.join(BASE_DIR, path)
+                img_path_cls[int(label)].append(actual_path)
+            except Exception as e:
+                print(f"Error loading image {path}: {e}")
+
     for cls in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES):
-        if not img_class_dict[cls]:
+        if not img_path_cls[cls]:
             # random initialization if no images for this class
             prototypes[cls] = torch.randn(
                 cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
@@ -106,10 +103,16 @@ def initialize_prototypes_kmeans(model, cfg):
             )
             continue
         
+        imgs = []
+
+        for img_path in img_path_cls[cls]:
+            img = read_image(img_path, mode=cfg.INPUT.MODE)
+            transformed_img = transforms(img)
+            imgs.append(transformed_img)
+        
+        
         # stack all images for current class
-        images = torch.stack(img_class_dict[cls]).to(cfg.MODEL.DEVICE)
-        # clear the loaded images for this class
-        img_class_dict[cls] = []
+        images = torch.stack(imgs).to(cfg.MODEL.DEVICE)
 
         # extract features
         with torch.no_grad():
@@ -117,9 +120,11 @@ def initialize_prototypes_kmeans(model, cfg):
             feats_np = feats.cpu().numpy()
             # clear the features tensor
             del feats
+            torch.cuda.empty_cache()
         
         # clear the stacked images
         del images
+        torch.cuda.empty_cache()
 
         if len(feats_np) >= cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS:
             # use KMeans if we have enough samples
@@ -129,25 +134,28 @@ def initialize_prototypes_kmeans(model, cfg):
                 n_init=10 # multiple initialization for better results
             ).fit(feats_np)
             centers = torch.tensor(kmeans.cluster_centers_, dtype=torch.float)
-            prototypes[cls] = centers
+            prototypes[cls] = centers.to(cfg.MODEL.DEVICE)
             # clear kmeans and centers
             del kmeans
             del centers
+            torch.cuda.empty_cache()
         else:
             # if we don't have enough samples, use mean with noise
             mean_feat = torch.tensor(feats_np.mean(axis=0), dtype=torch.float)
             for k in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS):
                 noise = torch.randn(cfg.MODEL.HEAD.DIM, device=cfg.MODEL.DEVICE) * 0.01
-                prototypes[cls, k] = mean_feat + noise
+                prototypes[cls, k] = mean_feat.to(cfg.MODEL.DEVICE) + noise
+                del noise
+                torch.cuda.empty_cache()
             
             # clear mean_feat
             del mean_feat
+            torch.cuda.empty_cache()
 
         # clear the numpy features array
         del feats_np
+        gc.collect()
 
-    # clear the image dictionary
-    del img_class_dict
     gc.collect()
     torch.cuda.empty_cache()
 
