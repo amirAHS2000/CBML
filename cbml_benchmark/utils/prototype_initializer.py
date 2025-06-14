@@ -1,5 +1,6 @@
 import os
 import re
+import gc
 
 import torch
 import numpy as np
@@ -147,5 +148,7 @@ def initialize_prototypes_kmeans(model, cfg):
 
     # clear the image dictionary
     del img_class_dict
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return prototypes
