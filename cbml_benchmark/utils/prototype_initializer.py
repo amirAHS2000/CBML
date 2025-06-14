@@ -83,6 +83,8 @@ def initialize_prototypes_kmeans(model, cfg):
                 actual_path = os.path.join(base_dir, _path)
                 img = read_image(actual_path, mode=cfg.INPUT.MODE)
                 img_class_dict[int(_label)].append(transforms(img))
+                # clean up the loaded image immediately
+                del img
             except Exception as e:
                 print(f"Error loading image {_path}: {e}")
 
@@ -105,11 +107,18 @@ def initialize_prototypes_kmeans(model, cfg):
         
         # stack all images for current class
         images = torch.stack(img_class_dict[cls]).to(cfg.MODEL.DEVICE)
+        # clear the loaded images for this class
+        img_class_dict[cls] = []
 
         # extract features
         with torch.no_grad():
             feats = model(images)
             feats_np = feats.cpu().numpy()
+            # clear the features tensor
+            del feats
+        
+        # clear the stacked images
+        del images
 
         if len(feats_np) >= cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS:
             # use KMeans if we have enough samples
@@ -120,11 +129,23 @@ def initialize_prototypes_kmeans(model, cfg):
             ).fit(feats_np)
             centers = torch.tensor(kmeans.cluster_centers_, dtype=torch.float)
             prototypes[cls] = centers
+            # clear kmeans and centers
+            del kmeans
+            del centers
         else:
             # if we don't have enough samples, use mean with noise
             mean_feat = torch.tensor(feats_np.mean(axis=0), dtype=torch.float)
             for k in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS):
                 noise = torch.randn(cfg.MODEL.HEAD.DIM, device=cfg.MODEL.DEVICE) * 0.01
                 prototypes[cls, k] = mean_feat + noise
+            
+            # clear mean_feat
+            del mean_feat
+
+        # clear the numpy features array
+        del feats_np
+
+    # clear the image dictionary
+    del img_class_dict
 
     return prototypes
