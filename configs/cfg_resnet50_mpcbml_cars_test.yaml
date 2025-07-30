@@ -1,9 +1,9 @@
 MODEL:
   BACKBONE:
     NAME: resnet50
-  PRETRAIN: output-resnet50-cars196-mp-cbml/model_005000.pth
+  PRETRAIN: output-resnet50-cars196-mpcbml/model_005000.pth
 
-SAVE_DIR: output-resnet50-cars196-mp-cbml
+SAVE_DIR: output-resnet50-cars196-mpcbml
 
 INPUT:
   MODE: 'RGB'
@@ -22,7 +22,7 @@ LOSSES:
   NAME: 'multi_prototype_cbml'
   MULTI_PROTOTYPE_CBML:
     INIT_METHOD: 'kmeans'
-    N_CLASSES: 196
+    N_CLASSES: 98
     PROTOTYPE_PER_CLASS: 4
     HYPER_WEIGHT: 0.1
     REG_WEIGHT: 1.0

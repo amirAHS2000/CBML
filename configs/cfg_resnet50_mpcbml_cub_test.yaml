@@ -1,9 +1,9 @@
 MODEL:
   BACKBONE:
     NAME: resnet50
-  PRETRAIN: output-resnet50-cub-mp-cbml/model_005000.pth
+  PRETRAIN: output-resnet50-cub-mpcbml/model_005000.pth
 
-SAVE_DIR: output-resnet50-cub-mp-cbml
+SAVE_DIR: output-resnet50-cub-mpcbml
 
 INPUT:
   MODE: 'RGB'

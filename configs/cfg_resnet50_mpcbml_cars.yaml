@@ -3,7 +3,7 @@ MODEL:
     NAME: resnet50
   PRETRAIN: imagenet
 
-SAVE_DIR: output-resnet50-cars196-mp-cbml
+SAVE_DIR: output-resnet50-cars196-mpcbml
 
 INPUT:
   MODE: 'RGB'
