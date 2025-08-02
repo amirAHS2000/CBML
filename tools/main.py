@@ -147,7 +147,7 @@ if __name__ == '__main__':
     args = parse_args()
     cfg.merge_from_file(args.cfg_file)
 
-    with open('resource/datasets/CUB_200_2011/class_counts.json', 'r') as fp:
+    with open(cfg.DATA.CLASS_COUNT_SOURCE, 'r') as fp:
         class_counts = json.load(fp)
     total = sum(class_counts.values())
     # assuming classes are stored as string keys "0", "1", ..., ensure correct order:
