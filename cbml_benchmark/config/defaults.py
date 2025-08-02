@@ -141,6 +141,7 @@ _C.LOSSES.CENTER_LOSS.USE_GPU=True
 _C.DATA = CN()
 _C.DATA.TRAIN_IMG_SOURCE = 'resource/datasets/CUB_200_2011/train.txt'
 _C.DATA.TEST_IMG_SOURCE = 'resource/datasets/CUB_200_2011/test.txt'
+_C.DATA.CLASS_COUNT_SOURCE = 'resource/datasets/CUB_200_2011/class_counts.json'
 _C.DATA.TRAIN_BATCHSIZE = 60
 _C.DATA.TEST_BATCHSIZE = 128
 _C.DATA.NUM_WORKERS = 8
