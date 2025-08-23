@@ -1,6 +1,6 @@
 #!/bin/bash
 
-OUT_DIR="output-resnet50-cars-mpcbml"
+OUT_DIR="output-resnet50-cars196-mpcbml"
 if [[ ! -d "${OUT_DIR}" ]]; then
     echo "Creating output dir for training : ${OUT_DIR}"
     mkdir ${OUT_DIR}
