@@ -98,7 +98,7 @@ for f, v in [(train_file, train_data), (test_file, test_data)]:
     with open(f, 'w') as tf:
         for fname, label in v:
             # TODO: this absolute path of images might need some changes
-            print("{}, {}".format(fname, label), file=tf)
+            print("{},{}".format(fname, label), file=tf)
 
 # save the class counts for training
 with open(class_counts_file, 'w') as counts_file:
