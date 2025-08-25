@@ -1,9 +1,9 @@
 MODEL:
   BACKBONE:
     NAME: resnet50
-  PRETRAIN: output-resnet50-cars196-proxynca/model_005000.pth
+  PRETRAIN: output-resnet50-cars196-cbml/model_005000.pth
 
-SAVE_DIR: output-resnet50-cars196-proxynca
+SAVE_DIR: output-resnet50-cars196-cbml
 
 INPUT:
   MODE: 'RGB'
@@ -19,12 +19,14 @@ SOLVER:
   WEIGHT_DECAY: 0.0005
 
 LOSSES:
-  NAME: 'proxynca_loss'
-  PROXY_LOSS:
-    NB_CLASSES: 98
-    SMOOTHING_CONST: 0.1
-    SCALING_X: 3
-    SCALING_P: 3
+  NAME: 'cbml_loss'
+  CBML_LOSS:
+    POS_A: 0.5
+    POS_B: 0.5
+    NEG_A: 1.0
+    NEG_B: 0.01
+    MARGIN: 0.1
+    HYPER_WEIGHT: 0.2
 
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/Cars196/train.txt
