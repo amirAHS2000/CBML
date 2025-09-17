@@ -19,9 +19,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         # initializing parameters
         # theta = log(beta) and beta = 1 / sigma_sq
-        # self.theta = nn.Parameter(
-        #     torch.tensor(2.0, device=self.device)
-        # )
+        self.theta = nn.Parameter(
+            torch.tensor(2.0, device=self.device)
+        )
 
         # prototypes: [num_classes, prototype_per_class, embed_dim]
         # self.prototypes = nn.Parameter(
@@ -76,6 +76,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
         proto_embd_sim = proto_embd_sim.view(
             batch_size, self.num_classes, self.prototype_per_class
         )
+
+        beta = torch.exp(self.theta)
 
         # regularization
         regularization_term = list()
@@ -139,7 +141,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
             # build loss terms
             # similarity
             # sim_term = torch.exp(self.theta) * (pos_sim - neg_sim)
-            sim_term = 10.0 * (pos_sim - neg_sim)
+            # sim_term = 10.0 * (pos_sim - neg_sim)
+            sim_term = beta * (pos_sim - neg_sim)
 
             # bias
             eps = 1e-9
