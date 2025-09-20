@@ -5,6 +5,6 @@ if [[ ! -d "${OUT_DIR}" ]]; then
     echo "Creating output dir for training : ${OUT_DIR}"
     mkdir ${OUT_DIR}
 fi
-CUDA_VISIBLE_DEVICES=0 python3 ../tools/main.py --cfg ../configs/cfg_resnet50_proxynca_cars.yaml
+CUDA_VISIBLE_DEVICES=0 python3 ./tools/main.py --cfg ./configs/proxynca/cfg_resnet50_proxynca_cars.yaml
 
-CUDA_VISIBLE_DEVICES=0 python3 ../tools/main.py --cfg ../configs/cfg_resnet50_proxynca_cars_test.yaml --phase test
+CUDA_VISIBLE_DEVICES=0 python3 ./tools/main.py --cfg ./configs/proxynca/cfg_resnet50_proxynca_cars_test.yaml --phase test
