@@ -80,28 +80,32 @@ class MultiPrototypeCBMLLoss(nn.Module):
         beta = torch.exp(self.theta)
 
         # regularization
-        regularization_term = list()
-        for i in range(batch_size):
-            # computing the regularization term
-            pos_pair_ = embd_embd_sim[i][targets == targets[i]]
-            pos_pair_ = pos_pair_[pos_pair_ < 1 - pos_thresh]
-            neg_pair_ = embd_embd_sim[i][targets != targets[i]]
+        # regularization_term = list()
+        # for i in range(batch_size):
+        #     # computing the regularization term
+        #     pos_pair_ = embd_embd_sim[i][targets == targets[i]]
+        #     pos_pair_ = pos_pair_[pos_pair_ < 1 - pos_thresh]
+        #     neg_pair_ = embd_embd_sim[i][targets != targets[i]]
 
-            if len(neg_pair_) < 1 or len(pos_pair_) < 1:
-                continue
+        #     if len(neg_pair_) < 1 or len(pos_pair_) < 1:
+        #         continue
 
-            mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
-            # sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
-            sigma_ = torch.mean(torch.pow(neg_pair_ - mean_, 2))
-            regularization_term.append((sigma_))
+        #     mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
+        #     # sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
+        #     sigma_ = torch.mean(torch.pow(neg_pair_ - mean_, 2))
+        #     regularization_term.append((sigma_))
         
-        if len(regularization_term) > 0:
-            regularization_term = torch.stack(regularization_term).mean()
-        else:
-            regularization_term = torch.tensor(0.0, device=self.device)
+        # if len(regularization_term) > 0:
+        #     regularization_term = torch.stack(regularization_term).mean()
+        # else:
+        #     regularization_term = torch.tensor(0.0, device=self.device)
         
 
         total_loss = 0.0
+
+        mvc_terms = [] # list of per-sample L2_i tensors
+        mvc_topk = None # TODO 
+
         # for each sample, find pos and neg prototype and compute its loss
         for i in range(batch_size):
             x = normalized_embds[i] # [D]
@@ -151,7 +155,62 @@ class MultiPrototypeCBMLLoss(nn.Module):
                          - torch.log(prior_neg + eps) - torch.log(w_neg + eps))
             total_loss += (sim_term + bias_term)
 
+            # Prototype-based MVC
+            # build positive-prototype similarities vector (pos_sims) -> [k]
+            # build negatives list: all prototypes not of class y -> (C*K - K)
+
+            neg_sims_list = []
+            pos_sims_list = []
+
+            # collect pos proto sims explicitly (already have pos_sims)
+            for kk in range(self.prototype_per_class):
+                pos_sims_list.append(pos_sim[kk]) # tensors
+            
+            # collect negatives across classes
+            for cc in range(self.num_classes):
+                if cc == y:
+                    continue
+                for kk in range(self.prototype_per_class):
+                    neg_sims_list.append(all_sim[cc, kk]) # tensor
+            
+            # convert to tensor
+            if len(pos_sims_list) > 0:
+                pos_sims_tensor = torch.stack(pos_sims_list) # [K]
+                pos_mean = pos_sims_tensor.mean() # scalar tensor
+            else:
+                pos_mean = torch.tensor(0.0, device=self.device)
+
+            if len(neg_sims_list) > 0:
+                neg_sims_tensor = torch.stack(neg_sims_list) # [C*K - K]
+                # if top-k requested, pick top-k hardest negatives for this sample
+                if mvc_topk is not None and (0 < mvc_topk < neg_sims_tensor.size(0)):
+                    topk_vals, _ = torch.topk(neg_sims_tensor, k=mvc_topk)
+                    neg_used = topk_vals
+                else:
+                    neg_used = neg_sims_tensor
+                
+                neg_mean = neg_used.mean() # scalar tensor
+
+                # compute xi as blended target
+                xi = self.hyper_weight * pos_mean + (1.0 - self.hyper_weight) * neg_mean # scalar tensor
+
+                # compute squared diffs mean across the used negatives
+                diffs = neg_used - xi # vector
+                L2_i = torch.mean(diffs * diffs) # scalar tensor
+            else:
+                # no negatives (unlikely with prototypes) -> zero contribution
+                L2_i = torch.tensor(0.0, device=self.device)
+
+            mvc_terms.append(L2_i)
+
         # average and add regularization
         loss = -total_loss / batch_size
-        loss = loss + self.reg_weight * regularization_term
+
+        # finalize MVC: mean of per-sample L2_i
+        if len(mvc_terms) > 0:
+            mvc_L2 = torch.stack(mvc_terms).mean()
+        else:
+            mvc_L2 = torch.tensor(0.0, device=self.device)
+
+        loss = loss + self.reg_weight * mvc_L2
         return loss
