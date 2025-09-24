@@ -50,7 +50,7 @@ def train(cfg):
             prototypes = initialize_prototypes_random(
                 num_classes=cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
                 prototype_per_class=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
-                embed_dim=cfg.LOSSES.MODEL.HEAD.DIM,
+                embed_dim=cfg.MODEL.HEAD.DIM,
                 device=device
             )
         else:
