@@ -16,19 +16,16 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         self.hyper_weight = cfg.LOSSES.MULTI_PROTOTYPE_CBML.HYPER_WEIGHT
         self.reg_weight = cfg.LOSSES.MULTI_PROTOTYPE_CBML.REG_WEIGHT
+        # self.mvc_topk = cfg.LOSSES.MULTI_PROTOTYPE_CBML.MVC_TOPK
+        self.mvc_topk = 20
 
         # initializing parameters
         # theta = log(beta) and beta = 1 / sigma_sq
         self.theta = nn.Parameter(
             torch.tensor(2.0, device=self.device)
         )
-
+        
         # prototypes: [num_classes, prototype_per_class, embed_dim]
-        # self.prototypes = nn.Parameter(
-        #     torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
-        # )
-        # self.prototypes.data = F.normalize(self.prototypes.data, p=2, dim=2)
-
         self.prototypes = nn.Parameter(
             torch.zeros(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
         )
@@ -54,163 +51,123 @@ class MultiPrototypeCBMLLoss(nn.Module):
             torch.cuda.empty_cache()
 
     def forward(self, embeddings, targets):
+        # device consistency
         if embeddings.device != self.device:
             embeddings = embeddings.to(self.device)
         if targets.device != self.device:
             targets = targets.to(self.device)
 
-        pos_thresh = 1e-5
+        # pos_thresh = 1e-5
         batch_size = embeddings.size(0)
-        
-        # normalization
+        B = batch_size
+        C = self.num_classes
+        K = self.prototype_per_class
+        D = self.embed_dim
+
+        # normalize embeddings & prototypes
         normalized_embds = F.normalize(embeddings, p=2, dim=1) # [B, D]
         normalized_protos = F.normalize(self.prototypes, p=2, dim=2) # [C, K, D]
 
-        # with the second initialization (not softmax) we might get some negative weights during training
+        # normalize weights
         weights = F.softmax(self.weights, dim=1) # [C, K]
-        # weights = self.weights - (self.weights.sum(dim=1, keepdim=True) - 1.0) / self.prototype_per_class
 
-        # similarity matrices
-        embd_embd_sim = torch.matmul(normalized_embds, normalized_embds.t())
-        proto_embd_sim = torch.matmul(normalized_embds, normalized_protos.view(-1, self.embed_dim).t())
-        proto_embd_sim = proto_embd_sim.view(
-            batch_size, self.num_classes, self.prototype_per_class
-        )
+        # prototype-embedding similarities: [B, C, K]
+        proto_embd_sim = torch.matmul(normalized_embds, normalized_protos.view(-1, D).t())
+        proto_embd_sim = proto_embd_sim.view(B, C, K)
 
+        # learnable parameter (1 / sigma_squared)
         beta = torch.exp(self.theta)
 
-        # regularization
-        # regularization_term = list()
-        # for i in range(batch_size):
-        #     # computing the regularization term
-        #     pos_pair_ = embd_embd_sim[i][targets == targets[i]]
-        #     pos_pair_ = pos_pair_[pos_pair_ < 1 - pos_thresh]
-        #     neg_pair_ = embd_embd_sim[i][targets != targets[i]]
+        # ----- precompute some heavy per-sample work -----
+        # per-sample positive prototype similarities: [B, K]
+        idx = torch.arange(B, device=self.device)
+        pos_proto_sims_all = proto_embd_sim[idx, targets] # [B, K]
 
-        #     if len(neg_pair_) < 1 or len(pos_pair_) < 1:
-        #         continue
+        # best positive prototype index per sample: [B] (tensor of ints)
+        pos_best_idx_all = pos_proto_sims_all.argmax(dim=-1) # [B]
 
-        #     mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
-        #     # sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
-        #     sigma_ = torch.mean(torch.pow(neg_pair_ - mean_, 2))
-        #     regularization_term.append((sigma_))
-        
-        # if len(regularization_term) > 0:
-        #     regularization_term = torch.stack(regularization_term).mean()
-        # else:
-        #     regularization_term = torch.tensor(0.0, device=self.device)
-        
+        # flatten all prototypes per sample: [B, C*K]
+        all_flat = proto_embd_sim.view(B, -1) # [B, C*K]
 
+        # precompute flat indices of prototypes that belong to the true class for each sample
+        # for class j, prototypes indices in flattened row are j*K + [0..K-1]
+        # compute flat indices to exclude (shape [B, K])
+        class_offsets = (targets.unsqueeze(1) * K) + torch.arange(K, device=self.device).unsqueeze(0) # [B, K]
+
+        # build neg_mask_flat: True where negative prototypes: [B, C*K]
+        neg_mask_flat = torch.ones_like(all_flat, dtype=torch.bool)
+        # set positions of positive class prototypes to False
+        neg_mask_flat[idx.unsqueeze(1), class_offsets] = False
+
+        # loop: per-sample CBML + per-sample MVC (using precomputed slices)
         total_loss = 0.0
+        mvc_terms = []
 
-        mvc_terms = [] # list of per-sample L2_i tensors
-        mvc_topk = None # TODO 
-
-        # for each sample, find pos and neg prototype and compute its loss
-        for i in range(batch_size):
+        for i in range(B):
             x = normalized_embds[i] # [D]
-            y = targets[i].item() # true class
+            y = int(targets[i].item()) # class index
 
-            # extract the [k] similarities for the true class y
-            pos_sim_protos = proto_embd_sim[i, y, :]
+            # positive prototype info
+            pos_sims = pos_proto_sims_all[i] # [K] tensor
+            best_pos_idx = int(pos_best_idx_all[i].item())
+            pos_sim = pos_sims[best_pos_idx]
+            pos_proto = normalized_protos[y, best_pos_idx] # [D]
+            w_pos = weights[y, best_pos_idx] # tensor scalar
+            prior_pos = self.class_priors[y] # tensor scalar
 
-            # find the index of the best positive prototype
-            best_pos_proto_idx = torch.argmax(pos_sim_protos).item() # python int
+            # negative prototype (hardest) using flattened arr & mask
+            neg_flat_row = all_flat[i] # [C*K]
+            neg_mask_row = neg_mask_flat[i] # [C*K] boolean
+            # select negatives (this produces a 1D tensor of length: C*K - K)
+            neg_candidates = neg_flat_row[neg_mask_row] # [num_neg]
+            # fastest way to get hardest negative:
+            neg_val, neg_idx_in_candidates = torch.max(neg_candidates, dim=0)
+            neg_sim = neg_val # scalar tensor
 
-            # grab the its similarity, weight, and prior
-            pos_sim = pos_sim_protos[best_pos_proto_idx]
-            pos_proto = normalized_protos[y, best_pos_proto_idx]
-            w_pos = weights[y, best_pos_proto_idx]
-            prior_pos = self.class_priors[y]
+            # map the index in neg_candidates back to class/proto index:
+            # We need the flat index in all_flat: find where neg_mask_row is True and pick that pos
+            # To avoid .nonzero() overhead every iteration, we can compute the flat index directly:
+            # Get the boolean mask indices (once) — but we didn't store them per-sample.
+            true_positions = torch.nonzero(neg_mask_row, as_tuple=False).squeeze(1) # [num_neg]
+            flat_neg_idx = int(true_positions[neg_idx_in_candidates].item()) # flat index in [0, C*K)
+            neg_class = flat_neg_idx // K
+            neg_proto_idx = flat_neg_idx % K
 
-            # for negatives, mask out the true class
-            # take all classes except y, flatten them along K
-            all_sim = proto_embd_sim[i] # [C, K]
-            mask = torch.ones_like(all_sim, dtype=torch.bool)
-            mask[y, :] = False # zero out true class row
+            neg_proto = normalized_protos[neg_class, neg_proto_idx]
+            w_neg = weights[neg_class, neg_proto_idx]
+            prior_neg = self.class_priors[neg_class]
 
-            # apply the mask and find the flat argmax
-            neg_sim_flat = all_sim.masked_fill(~mask, float('-inf')).view(-1) # [C * K]
-            neg_idx_flat = torch.argmax(neg_sim_flat).item() # int in [0 .. C * K)
-
-            # convert that flat index back to (class, prototype) via divmod
-            best_neg_class, best_neg_proto_idx = divmod(neg_idx_flat, self.prototype_per_class)
-
-            # grab its similarity, weight, and prior
-            neg_sim = all_sim[best_neg_class, best_neg_proto_idx]
-            neg_proto = normalized_protos[best_neg_class, best_neg_proto_idx]
-            w_neg = weights[best_neg_class, best_neg_proto_idx]
-            prior_neg = self.class_priors[best_neg_class]
-
-            # build loss terms
-            # similarity
-            # sim_term = torch.exp(self.theta) * (pos_sim - neg_sim)
-            # sim_term = 10.0 * (pos_sim - neg_sim)
+            # CBML terms
             sim_term = beta * (pos_sim - neg_sim)
-
-            # bias
             eps = 1e-9
-            # assume prior_pos, w_pos, prior_neg, w_neg are PyTorch scalars/tensors on the right device
             bias_term = (torch.log(prior_pos + eps) + torch.log(w_pos + eps)
                          - torch.log(prior_neg + eps) - torch.log(w_neg + eps))
             total_loss += (sim_term + bias_term)
 
-            # Prototype-based MVC
-            # build positive-prototype similarities vector (pos_sims) -> [k]
-            # build negatives list: all prototypes not of class y -> (C*K - K)
+            # ----- Prototype-based MVC -----
+            # pos_mean: mean over pos_sims
+            pos_mean = pos_sims.mean()
 
-            neg_sims_list = []
-            pos_sims_list = []
-
-            # collect pos proto sims explicitly (already have pos_sims)
-            for kk in range(self.prototype_per_class):
-                pos_sims_list.append(pos_sim[kk]) # tensors
-            
-            # collect negatives across classes
-            for cc in range(self.num_classes):
-                if cc == y:
-                    continue
-                for kk in range(self.prototype_per_class):
-                    neg_sims_list.append(all_sim[cc, kk]) # tensor
-            
-            # convert to tensor
-            if len(pos_sims_list) > 0:
-                pos_sims_tensor = torch.stack(pos_sims_list) # [K]
-                pos_mean = pos_sims_tensor.mean() # scalar tensor
+            # neg_used: either top-k from neg_candidates or all
+            if getattr(self, "mvc_topk", None) is not None and 0 < self.mvc_topk < neg_candidates.numel():
+                neg_used_vals, _ = torch.topk(neg_candidates, k=self.mvc_topk)
+                neg_used = neg_used_vals
             else:
-                pos_mean = torch.tensor(0.0, device=self.device)
-
-            if len(neg_sims_list) > 0:
-                neg_sims_tensor = torch.stack(neg_sims_list) # [C*K - K]
-                # if top-k requested, pick top-k hardest negatives for this sample
-                if mvc_topk is not None and (0 < mvc_topk < neg_sims_tensor.size(0)):
-                    topk_vals, _ = torch.topk(neg_sims_tensor, k=mvc_topk)
-                    neg_used = topk_vals
-                else:
-                    neg_used = neg_sims_tensor
-                
-                neg_mean = neg_used.mean() # scalar tensor
-
-                # compute xi as blended target
-                xi = self.hyper_weight * pos_mean + (1.0 - self.hyper_weight) * neg_mean # scalar tensor
-
-                # compute squared diffs mean across the used negatives
-                diffs = neg_used - xi # vector
-                L2_i = torch.mean(diffs * diffs) # scalar tensor
+                neg_used = neg_candidates
+            
+            if neg_used.numel() > 0:
+                neg_mean = neg_used.mean()
+                xi = self.hyper_weight * pos_mean + (1.0 - self.hyper_weight) * neg_mean
+                diffs = neg_used - xi
+                L2_i = torch.mean(diffs * diffs)
             else:
-                # no negatives (unlikely with prototypes) -> zero contribution
                 L2_i = torch.tensor(0.0, device=self.device)
-
+            
             mvc_terms.append(L2_i)
 
-        # average and add regularization
-        loss = -total_loss / batch_size
+        # average and combine
+        mpcbml_loss = - total_loss / B
+        mvc_L2 = torch.stack(mvc_terms).mean() if len(mvc_terms) > 0 else torch.tensor(0.0, device=self.device)
 
-        # finalize MVC: mean of per-sample L2_i
-        if len(mvc_terms) > 0:
-            mvc_L2 = torch.stack(mvc_terms).mean()
-        else:
-            mvc_L2 = torch.tensor(0.0, device=self.device)
-
-        loss = loss + self.reg_weight * mvc_L2
+        loss = mpcbml_loss + self.reg_weight * mvc_L2
         return loss
