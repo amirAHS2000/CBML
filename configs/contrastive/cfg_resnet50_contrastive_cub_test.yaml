@@ -19,7 +19,7 @@ SOLVER:
   WEIGHT_DECAY: 0.0005
 
 LOSSES:
-  NAME: 'contrastive_loss'
+  NAME: 'online_contrastive_loss'
   CONTRASTIVE_LOSS:
     MARGIN: 1.0
     PAIR_SELECTOR: 'all'
