@@ -42,7 +42,7 @@ def initialize_prototypes_mean(model, cfg):
             scale=cfg.INPUT.CROP_SCALE,
             size=cfg.INPUT.CROP_SIZE
         ),
-        T.RandomHorizontalFlip(p=cfg.INPUT_FLIP_PROB),
+        T.RandomHorizontalFlip(p=cfg.INPUT.FLIP_PROB),
         T.ToTensor(),
         normalize_transform,
     ])
