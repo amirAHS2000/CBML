@@ -38,14 +38,10 @@ def train(cfg):
                 cfg=cfg
             )
         elif cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'mean':
-            pass # TODO change the 'initialize_prototypes_mean' function to use its own dataloader
-            # prototypes = initialize_prototypes_mean(
-            #     train_loader=train_loader,
-            #     model=model,
-            #     num_classes=cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
-            #     prototype_per_class=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
-            #     device=device
-            # )
+            prototypes = initialize_prototypes_mean(
+                model=model,
+                cfg=cfg
+            )
         elif cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'random':
             prototypes = initialize_prototypes_random(
                 num_classes=cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
