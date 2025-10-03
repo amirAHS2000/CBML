@@ -47,6 +47,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
             self.prototypes.data = prototypes
             torch.cuda.empty_cache()
 
+    def show_theta(self):
+        return self.theta.item()
+
     def forward(self, embeddings, targets):
         # device consistency
         if embeddings.device != self.device:

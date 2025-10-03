@@ -76,6 +76,8 @@ def do_train(
             # Log current recall metrics.
             print(recall_curr)
 
+            logger.info(f"The value of theta is: {criterion.show_theta()}")
+
             # Update best model if recall@1 improves.
             if recall_curr[0] > best_recall:
                 best_recall = recall_curr[0]
@@ -169,7 +171,6 @@ def do_train(
 
     # Log the best iteration and recall achieved.
     logger.info(f"Best iteration: {best_iteration :06d} | best recall {best_recall} ")
-
 
 def do_test(
         model,        # Neural network model to evaluate.
