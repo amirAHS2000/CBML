@@ -16,13 +16,13 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.hyper_weight = cfg.LOSSES.MULTI_PROTOTYPE_CBML.HYPER_WEIGHT
         self.reg_weight = cfg.LOSSES.MULTI_PROTOTYPE_CBML.REG_WEIGHT
         # self.mvc_topk = cfg.LOSSES.MULTI_PROTOTYPE_CBML.MVC_TOPK
-        self.mvc_topk = 20
+        self.mvc_topk = None
 
         # initializing parameters
         # theta = log(beta) and beta = 1 / sigma_sq
-        self.theta = nn.Parameter(
-            torch.tensor(2.0, device=self.device)
-        )
+        # self.theta = nn.Parameter(
+        #     torch.tensor(2.0, device=self.device)
+        # )
         
         # prototypes: [num_classes, prototype_per_class, embed_dim]
         self.prototypes = nn.Parameter(
@@ -76,7 +76,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         proto_embd_sim = proto_embd_sim.view(B, C, K)
 
         # learnable parameter (1 / sigma_squared)
-        beta = torch.exp(self.theta)
+        # beta = torch.exp(self.theta)
 
         # ----- precompute some heavy per-sample work -----
         # per-sample positive prototype similarities: [B, K]
@@ -131,7 +131,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
             # -------------------------------------
 
             # CBML terms
-            sim_term = beta * (pos_sim - neg_sim)
+            # sim_term = beta * (pos_sim - neg_sim)
+            sim_term = 7.37 * (pos_sim - neg_sim)
             eps = 1e-9
             bias_term = (torch.log(prior_pos + eps) + torch.log(w_pos + eps)
                          - torch.log(prior_neg + eps) - torch.log(w_neg + eps))
