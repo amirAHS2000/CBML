@@ -119,15 +119,29 @@ class MultiPrototypeCBMLLoss(nn.Module):
             # Max sim per class over K prototypes: [C]
             max_sims_per_class, _ = torch.max(neg_class_sims, dim=1)
             # Find hardest negative class (excluding true class)
-            neg_class = torch.argmax(max_sims_per_class) # scalar
-            # Get similarities for that class's prototypes: [K]
-            neg_class_proto_sims = proto_embd_sim[i, neg_class] # [K]
-            # Find best prototype in hardest class
-            neg_proto_idx = torch.argmax(neg_class_proto_sims) # scalar
-            neg_sim = neg_class_proto_sims[neg_proto_idx] # scalar
-            neg_proto = normalized_protos[neg_class, neg_proto_idx]
-            w_neg = weights[neg_class, neg_proto_idx]
-            prior_neg = self.class_priors[neg_class]
+            # neg_class = torch.argmax(max_sims_per_class) # scalar
+            # # Get similarities for that class's prototypes: [K]
+            # neg_class_proto_sims = proto_embd_sim[i, neg_class] # [K]
+            # # Find best prototype in hardest class
+            # neg_proto_idx = torch.argmax(neg_class_proto_sims) # scalar
+            # neg_sim = neg_class_proto_sims[neg_proto_idx] # scalar
+            # neg_proto = normalized_protos[neg_class, neg_proto_idx]
+            # w_neg = weights[neg_class, neg_proto_idx]
+            # prior_neg = self.class_priors[neg_class]
+
+            # Top-3 hardest classes
+            _, top_neg_classes = torch.topk(max_sims_per_class, 3)
+            neg_sims = []; w_negs = []; prior_negs = []
+            for nc in top_neg_classes:
+                ncs = proto_embd_sim[i, nc]
+                npi = ncs.argmax()
+                neg_sims.append(ncs[npi])
+                w_negs.append(weights[nc, npi])
+                prior_negs.append(self.class_priors[nc])
+
+            neg_sim = torch.mean(torch.stack(neg_sims))
+            w_neg = torch.mean(torch.stack(w_negs))
+            prior_neg = torch.mean(torch.stack(prior_negs))
             # -------------------------------------
 
             # CBML terms
