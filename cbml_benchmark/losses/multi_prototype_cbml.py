@@ -34,6 +34,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
             torch.ones(self.num_classes, self.prototype_per_class, device=self.device) / self.prototype_per_class
         )
 
+        # learnable multipliers
+        self.lambdas = nn.Parameter(torch.zeros(self.num_classes, device=self.device))
+
         # class priors: uniform for simplicity [num_classes]
         self.class_priors = nn.Parameter(
             torch.tensor(cfg.LOSSES.MULTI_PROTOTYPE_CBML.CLASS_PRIORS, device=self.device),
@@ -69,7 +72,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
         normalized_protos = F.normalize(self.prototypes, p=2, dim=2) # [C, K, D]
 
         # normalize weights
-        weights = F.softmax(self.weights, dim=1) # [C, K]
+        # weights = F.softmax(self.weights, dim=1) # [C, K]
+        raw_weights = F.softplus(self.weights)
 
         # prototype-embedding similarities: [B, C, K]
         proto_embd_sim = torch.matmul(normalized_embds, normalized_protos.view(-1, D).t())
@@ -109,7 +113,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
             best_pos_idx = int(pos_best_idx_all[i].item())
             pos_sim = pos_sims[best_pos_idx]
             pos_proto = normalized_protos[y, best_pos_idx]
-            w_pos = weights[y, best_pos_idx]
+            w_pos = raw_weights[y, best_pos_idx]
             prior_pos = self.class_priors[y]
 
             # ----- Modified Negative Selection -----
@@ -136,7 +140,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
                 ncs = proto_embd_sim[i, nc]
                 npi = ncs.argmax()
                 neg_sims.append(ncs[npi])
-                w_negs.append(weights[nc, npi])
+                w_negs.append(raw_weights[nc, npi])
                 prior_negs.append(self.class_priors[nc])
 
             neg_sim = torch.mean(torch.stack(neg_sims))
@@ -175,6 +179,11 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         mpcbml_loss = - total_loss / B
         mvc_L2 = torch.stack(mvc_terms).mean() if len(mvc_terms) > 0 else torch.tensor(0.0, device=self.device)
+
+        # constraint per class
+        constraints = raw_weights.sum(dim=1) - 1.0 # [C]
+        lag_term = torch.sum(self.lambdas * constraints) # scalar
+        mpcbml_loss += lag_term
 
         loss = mpcbml_loss + self.reg_weight * mvc_L2
         return loss

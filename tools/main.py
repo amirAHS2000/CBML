@@ -62,18 +62,20 @@ def train(cfg):
         logger.info("Prototype initialization complete.")
 
     loss_param = None
-    if cfg.LOSSES.NAME == 'softtriple_loss' or cfg.LOSSES.NAME == 'proxynca_loss' or cfg.LOSSES.NAME == 'center_loss' or cfg.LOSSES.NAME == 'adv_loss' or cfg.LOSSES.NAME == 'multi_prototype_cbml':
+    dual_optimizer = None
+    if cfg.LOSSES.NAME == 'multi_prototype_cbml':
+        # primal loss parameters: exclude lambdas
+        loss_param = [p for n, p in criterion.named_parameters() if 'lambdas' not in n]
+        # dual optimizer for lambdas (gradient ascent)
+        dual_optimizer = torch.optim.Adam([criterion.lambdas], lr=cfg.SOLVER.LAMBDA_LR)
+    elif cfg.LOSSES.NAME in ['softtriple_loss', 'proxynca_loss', 'center_loss', 'adv_loss']:
         loss_param = criterion
-    if cfg.LOSSES.NAME_AUX == 'softtriple_loss' or cfg.LOSSES.NAME_AUX == 'proxynca_loss' or cfg.LOSSES.NAME_AUX == 'center_loss' or cfg.LOSSES.NAME_AUX == 'adv_loss':
-        loss_param = criterion_aux
+
+    if cfg.LOSSES.NAME_AUX in ['softtriple_loss', 'proxynca_loss', 'center_loss', 'adv_loss']:
+        loss_param = criterion_aux if loss_param is None else loss_param + criterion_aux.parameters()
 
     optimizer = build_optimizer(cfg, model, loss_param=loss_param)
     scheduler = build_lr_scheduler(cfg, optimizer)
-
-    # if 'train_loader' in locals():
-    #     del train_loader
-    #     torch.cuda.empty_cache()
-    #     gc.collect()
 
     train_loader = build_data(cfg, is_train=True)
     val_loader = build_data(cfg, is_train=False)
@@ -100,7 +102,8 @@ def train(cfg):
         device,
         checkpoint_period,
         arguments,
-        logger
+        logger,
+        dual_optimizer=dual_optimizer
     )
 
 def test(cfg):

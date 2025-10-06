@@ -36,7 +36,8 @@ def do_train(
         device,            # Device for computation (e.g., "cuda" or "cpu").
         checkpoint_period, # Frequency (in iterations) to save checkpoints.
         arguments,         # Dictionary for tracking state (e.g., current iteration).
-        logger             # Logger for printing training progress and metrics.
+        logger,             # Logger for printing training progress and metrics.
+        dual_optimizer=None
 ):
     """
     Main training loop.
@@ -124,8 +125,16 @@ def do_train(
 
         # Backward pass and optimization.
         optimizer.zero_grad()  # Clear previous gradients.
+        if dual_optimizer:
+            dual_optimizer.zero_grad()
         loss.backward()        # Compute gradients.
         optimizer.step()       # Update model parameters.
+        if dual_optimizer:
+            # Gradient ascent for lambdas
+            for p in criterion.lambdas:
+                if p.grad is not None:
+                    p.grad.data.mul_(-1.0) # flip sign for ascent
+            dual_optimizer.step()
 
         # Measure batch processing time.
         batch_time = time.time() - end
