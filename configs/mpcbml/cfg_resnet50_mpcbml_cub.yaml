@@ -27,6 +27,7 @@ LOSSES:
     PROTOTYPE_PER_CLASS: 4
     HYPER_WEIGHT: 0.1
     REG_WEIGHT: 1.0
+    N_NEGATIVES: 3
     
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt
