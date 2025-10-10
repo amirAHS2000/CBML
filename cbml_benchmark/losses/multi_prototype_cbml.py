@@ -13,6 +13,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.embed_dim = cfg.MODEL.HEAD.DIM
         self.device = torch.device(cfg.MODEL.DEVICE)
 
+        self.gamma = cfg.LOSSES.MULTI_PROTOTYPE_CBML.HYPER_WEIGHT
+        self.lambda_mvc = cfg.LOSSES.MULTI_PROTOTYPE_CBML.REG_WEIGHT
+
         # where N_NEGATIVES can be 1, 3, or -1 (to select all negatives)
         self.n_negatives = cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_NEGATIVES
 
@@ -43,6 +46,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
                 prototypes = prototypes.to(self.device)
             self.prototypes.data = prototypes
             torch.cuda.empty_cache()
+
+    def show_theta(self):
+        return self.theta.item()
 
     def forward(self, embeddings, targets):
         # Device consistency
@@ -75,9 +81,10 @@ class MultiPrototypeCBMLLoss(nn.Module):
         pos_best_idx_all = pos_proto_sims_all.argmax(dim=-1)  # [B]
 
         # flattened similarities and mask for ALL prototypes
-        all_proto_sims_flat = proto_embd_sim.view(B, C * K) # shape: [B, C*K]
+        # all_proto_sims_flat = proto_embd_sim.view(B, C * K) # shape: [B, C*K]
 
-        total_loss = 0.0
+        total_mpcbml_loss = 0.0
+        total_mvc_loss = 0.0
 
         for i in range(B):
             # x = normalized_embds[i]  # [D]
@@ -173,8 +180,51 @@ class MultiPrototypeCBMLLoss(nn.Module):
             eps = 1e-9
             bias_term = torch.log(prior_pos * w_pos + eps) - torch.log(avg_neg_prior_w + eps)
 
-            total_loss += (sim_term + bias_term)
+            total_mpcbml_loss += (sim_term + bias_term)
 
-        mpcbml_loss = - total_loss / B
-        loss = mpcbml_loss
+            # Positive Similarities: [K]
+            pos_sims_i = proto_embd_sim[i, y] # [K]
+            pos_weights_i = normalized_weights[y] # [K]
+            
+            # Positive Weighted Mean Similarity
+            weighted_pos_sim_sum = torch.sum(pos_sims_i * pos_weights_i)
+            # Since weights sum to 1, the sum is the mean
+            weighted_mean_pos = weighted_pos_sim_sum 
+            
+            # Negative Similarities: [C-1, K]
+            neg_mask = torch.ones(C, dtype=torch.bool, device=self.device)
+            neg_mask[y] = False
+            
+            # Flattened Negative Sim, Weights: [(C-1)*K]
+            neg_sims_flat = proto_embd_sim[i][neg_mask].reshape(-1)
+            neg_weights_flat = normalized_weights[neg_mask].reshape(-1)
+            
+            # Negative Weighted Mean Similarity
+            weighted_neg_sim_sum = torch.sum(neg_sims_flat * neg_weights_flat)
+            # The total weight for negative classes is C-1, as sum(w_k^c) = 1
+            weighted_mean_neg = weighted_neg_sim_sum / (C - 1.0)
+            
+            # Weighted Balancing Term
+            xi_w_i = self.gamma * weighted_mean_pos + (1.0 - self.gamma) * weighted_mean_neg
+            
+            # Weighted MVC Loss
+            # Weighted Squared Error, normalized by C-1 (total weight)
+            sq_diff = (neg_sims_flat - xi_w_i)**2
+            weighted_sq_diff_sum = torch.sum(sq_diff * neg_weights_flat)
+            
+            mvc_loss_i = weighted_sq_diff_sum / (C - 1.0 + 1e-9) # Add epsilon for safety
+            
+            total_mvc_loss += mvc_loss_i
+            
+            # Re-integrate MPCBML accumulation here
+            total_mpcbml_loss += (sim_term + bias_term)
+
+        # --- Final Loss Combination ---
+        mpcbml_loss = - total_mpcbml_loss / B
+        
+        # Average the accumulated MVC loss
+        avg_mvc_loss = total_mvc_loss / B
+
+        # Combine the two losses using the weighting factor lambda_mvc
+        loss = mpcbml_loss + self.lambda_mvc * avg_mvc_loss
         return loss
