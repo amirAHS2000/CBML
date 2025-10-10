@@ -92,47 +92,89 @@ class MultiPrototypeCBMLLoss(nn.Module):
             prior_pos = self.class_priors[y]
 
             # ---------- select N most contributing negative prototypes ----------
-            # create a mask for all negative prototypes (C*K total)
-            neg_mask_flat = torch.ones(C * K, dtype=torch.bool, device=self.device)
-            # find the indices of the K positive prototypes in the C*K flattened list
-            pos_start_idx = y * K
-            pos_indices = torch.arange(pos_start_idx, pos_start_idx + K, device=self.device)
-            # set mask to False for positive prototypes
-            neg_mask_flat[pos_indices] = False
+            # # create a mask for all negative prototypes (C*K total)
+            # neg_mask_flat = torch.ones(C * K, dtype=torch.bool, device=self.device)
+            # # find the indices of the K positive prototypes in the C*K flattened list
+            # pos_start_idx = y * K
+            # pos_indices = torch.arange(pos_start_idx, pos_start_idx + K, device=self.device)
+            # # set mask to False for positive prototypes
+            # neg_mask_flat[pos_indices] = False
 
-            # get similarities and corresponding weights/priors for ALL negative prototypes
-            all_neg_sims = all_proto_sims_flat[i][neg_mask_flat] # shape: [C*K - K]
-            all_neg_weights = normalized_weights.view(-1)[neg_mask_flat] # shape: [C*K - K]
-            all_neg_priors_flat = self.class_priors.unsqueeze(1).repeat(1, K).view(-1)[neg_mask_flat] # shape: [C*K - K]
+            # # get similarities and corresponding weights/priors for ALL negative prototypes
+            # all_neg_sims = all_proto_sims_flat[i][neg_mask_flat] # shape: [C*K - K]
+            # all_neg_weights = normalized_weights.view(-1)[neg_mask_flat] # shape: [C*K - K]
+            # all_neg_priors_flat = self.class_priors.unsqueeze(1).repeat(1, K).view(-1)[neg_mask_flat] # shape: [C*K - K]
 
-            # calculate the "contribution" (beta * similarity + log(prior * weight))
-            neg_contribution = beta * all_neg_sims + torch.log(all_neg_priors_flat * all_neg_weights + 1e-9)
+            # # calculate the "contribution" (beta * similarity + log(prior * weight))
+            # neg_contribution = beta * all_neg_sims + torch.log(all_neg_priors_flat * all_neg_weights + 1e-9)
 
-            # select the top N contributing negatives
-            # if n_negatives > (C*K - K), select all
-            N = min(self.n_negatives, len(neg_contribution)) if self.n_negatives > 0 else len(neg_contribution)
+            # # select the top N contributing negatives
+            # # if n_negatives > (C*K - K), select all
+            # N = min(self.n_negatives, len(neg_contribution)) if self.n_negatives > 0 else len(neg_contribution)
 
-            # get the top N indices based on contribution
-            top_n_indices = torch.topk(neg_contribution, k=N, dim=0, sorted=False)[1]
+            # # get the top N indices based on contribution
+            # top_n_indices = torch.topk(neg_contribution, k=N, dim=0, sorted=False)[1]
 
-            # extract the similarities, weights, and priors for the Top N
-            top_n_neg_sims = all_neg_sims[top_n_indices] # [N]
-            top_n_neg_weights = all_neg_weights[top_n_indices] # [N]
-            top_n_neg_priors = all_neg_priors_flat[top_n_indices] # [N]
+            # # extract the similarities, weights, and priors for the Top N
+            # top_n_neg_sims = all_neg_sims[top_n_indices] # [N]
+            # top_n_neg_weights = all_neg_weights[top_n_indices] # [N]
+            # top_n_neg_priors = all_neg_priors_flat[top_n_indices] # [N]
+
+            # ---------- Select N hardest prototypes from N hardest negative classes ----------
+            # identify all negative classes
+            neg_mask = torch.ones(C, dtype=torch.bool, device=self.device)
+            neg_mask[y] = False
+            neg_classes = torch.arange(C, device=self.device)[neg_mask] # [C-1]
+
+            # Find the hardest prototype (max sim) for EVERY class
+            max_sim_per_class = torch.max(proto_embd_sim[i], dim=1)[0] # [C]
+            best_idx_per_class = torch.argmax(proto_embd_sim[i], dim=1) # [C]
+
+            # extract info for the hardest prototype in each negative class
+            neg_class_sims = max_sim_per_class[neg_mask] # [C-1]
+            neg_class_weights = normalized_weights[neg_classes, best_idx_per_class[neg_classes]] # [C-1]
+            neg_class_priors = self.class_priors[neg_classes] # [C-1]
+
+            # calculate contribution for the HARDEST prototype of each negative class
+            neg_class_contribution = beta * neg_class_sims + torch.log(neg_class_priors * neg_class_weights + 1e-9)
+
+            # select the Top N classes based on their hardest prototype's contribution
+            N_neg_classes = len(neg_class_contribution)
+            N = min(self.n_negatives, N_neg_classes) if self.n_negatives > 0 else N_neg_classes
+
+            # get the top N indices (which correspond to the negative class list)
+            top_n_class_indices = torch.topk(neg_class_contribution, k=N, dim=0, sorted=False)[1]
+
+            # extract the similarities, weights, and priors for the TOP N hardest negative prototypes
+            top_n_neg_sims = neg_class_sims[top_n_class_indices] # [N]
+            top_n_neg_weights = neg_class_weights[top_n_class_indices] # [N]
+            top_n_neg_priors = neg_class_priors[top_n_class_indices] # [N]
 
             # ---------- Loss calculation ----------
-            # Sim term: beta * pos_sim - log(sum(exp(beta * neg_sim)))
-            # Using only top_n_neg_sims:
+            # # Sim term: beta * pos_sim - log(sum(exp(beta * neg_sim)))
+            # # Using only top_n_neg_sims:
+            # neg_exp_sum = torch.sum(torch.exp(beta * top_n_neg_sims))
+            # sim_term = beta * pos_sim - torch.log(neg_exp_sum + 1e-9)
+
+            # # Bias term: log(prior_pos * w_pos) - log((1/N) * sum(prior_neg * w_neg))
+            # # The denominator now averages over the N selected negatives
+            # avg_neg_prior_w = torch.mean(top_n_neg_priors * top_n_neg_weights)
+            # bias_term = torch.log(prior_pos * w_pos + 1e-9) - torch.log(avg_neg_prior_w + 1e-9)
+
+            # total_loss += (sim_term + bias_term)
+
+            # ---------- Loss calculation ----------
+            # Sim term: log(sum(exp(beta * neg_sim)))
             neg_exp_sum = torch.sum(torch.exp(beta * top_n_neg_sims))
             sim_term = beta * pos_sim - torch.log(neg_exp_sum + 1e-9)
 
             # Bias term: log(prior_pos * w_pos) - log((1/N) * sum(prior_neg * w_neg))
-            # The denominator now averages over the N selected negatives
             avg_neg_prior_w = torch.mean(top_n_neg_priors * top_n_neg_weights)
-            bias_term = torch.log(prior_pos * w_pos + 1e-9) - torch.log(avg_neg_prior_w + 1e-9)
+            eps = 1e-9
+            bias_term = torch.log(prior_pos * w_pos + eps) - torch.log(avg_neg_prior_w + eps)
 
             total_loss += (sim_term + bias_term)
-            
+
         mpcbml_loss = - total_loss / B
         loss = mpcbml_loss
         return loss
