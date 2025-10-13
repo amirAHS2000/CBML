@@ -51,6 +51,10 @@ def do_train(
     best_iteration = -1
     best_recall = 0
 
+    # Define iterations for train metric computation (25%, 50%, and 100% of max_iter)
+    # train_metric_iterations = {max_iter // 4, max_iter // 2, max_iter}
+    train_metric_iterations = {max_iter // 2, max_iter}
+
     # Start timers for training.
     start_training_time = time.time()
     end = time.time()
@@ -88,20 +92,21 @@ def do_train(
             else:
                 logger.info(f'Recall@1 at iteration {iteration:06d}: recall@1: {recall_curr[0]:.3f}')
 
-            # Compute train metrics at the same frequency as validation
-            logger.info('Train Metric Computation')
-            labels_train = train_loader.dataset.label_list
-            labels_train = np.array([int(k) for k in labels_train])
-            feats_train = feat_extractor(model, train_loader, logger=logger)
-            ret_metric_train = RetMetric(feats=feats_train, labels=labels_train)
-            recall_train = []
-            recall_train.append(ret_metric_train.recall_k(1))
-            recall_train.append(ret_metric_train.recall_k(2))
-            recall_train.append(ret_metric_train.recall_k(4))
-            recall_train.append(ret_metric_train.recall_k(8))
-            logger.info(f"Train recall at iteration {iteration}: {recall_train}")
-            # Log train-val gap for overfitting detection
-            logger.info(f"Overfit gap (train@1 - val@1): {recall_train[0] - recall_curr[0]:.3f}")
+            # Compute train metrics only at specified iterations (25%, 50%, end)
+            if iteration in train_metric_iterations:
+                logger.info('Train Metric Computation')
+                labels_train = train_loader.dataset.label_list
+                labels_train = np.array([int(k) for k in labels_train])
+                feats_train = feat_extractor(model, train_loader, logger=logger)
+                ret_metric_train = RetMetric(feats=feats_train, labels=labels_train)
+                recall_train = []
+                recall_train.append(ret_metric_train.recall_k(1))
+                recall_train.append(ret_metric_train.recall_k(2))
+                recall_train.append(ret_metric_train.recall_k(4))
+                recall_train.append(ret_metric_train.recall_k(8))
+                logger.info(f"Train recall at iteration {iteration}: {recall_train}")
+                # Log train-val gap for overfitting detection
+                logger.info(f"Overfit gap (train@1 - val@1): {recall_train[0] - recall_curr[0]:.3f}")
 
         # Switch back to training mode.
         model.train()
