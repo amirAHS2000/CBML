@@ -98,7 +98,7 @@ def do_train(
             if iteration == 4800:
                 logger.info('Train Metric Computation')
                 # Stratified sampling: 10 samples per class for CUB-200 (200 classes)
-                samples_per_class = getattr(cfg, 'TRAIN_SAMPLES_PER_CLASS', 10)
+                samples_per_class = 10
                 label_list = [int(k) for k in train_loader.dataset.label_list]
                 class_to_indices = defaultdict(list)
                 for idx, label in enumerate(label_list):
