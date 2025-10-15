@@ -3,6 +3,8 @@ import time
 
 import numpy as np
 import torch
+import random
+from collections import defaultdict
 
 from cbml_benchmark.data.evaluations import RetMetric
 from cbml_benchmark.utils.feat_extractor import feat_extractor
@@ -93,11 +95,32 @@ def do_train(
                 logger.info(f'Recall@1 at iteration {iteration:06d}: recall@1: {recall_curr[0]:.3f}')
 
             # Compute train metrics only at specified iterations (25%, 50%, end)
-            if iteration in train_metric_iterations:
+            if iteration == 4800:
                 logger.info('Train Metric Computation')
-                labels_train = train_loader.dataset.label_list
-                labels_train = np.array([int(k) for k in labels_train])
-                feats_train = feat_extractor(model, train_loader, logger=logger)
+                # Stratified sampling: 10 samples per class for CUB-200 (200 classes)
+                samples_per_class = getattr(cfg, 'TRAIN_SAMPLES_PER_CLASS', 10)
+                label_list = [int(k) for k in train_loader.dataset.label_list]
+                class_to_indices = defaultdict(list)
+                for idx, label in enumerate(label_list):
+                    class_to_indices[label].append(idx)
+                
+                indices = []
+                random.seed(42)  # For reproducibility
+                for class_indices in class_to_indices.values():
+                    num_to_sample = min(samples_per_class, len(class_indices))
+                    indices.extend(random.sample(class_indices, num_to_sample))
+                
+                logger.info(f"Sampled {len(indices)} train samples across {len(class_to_indices)} classes")
+                subset_dataset = torch.utils.data.Subset(train_loader.dataset, indices)
+                subset_loader = torch.utils.data.DataLoader(
+                    subset_dataset,
+                    batch_size=train_loader.batch_size,
+                    shuffle=False,
+                    num_workers=train_loader.num_workers,
+                    pin_memory=train_loader.pin_memory if hasattr(train_loader, 'pin_memory') else False
+                )
+                labels_train = np.array([label_list[i] for i in indices])
+                feats_train = feat_extractor(model, subset_loader, logger=logger)
                 ret_metric_train = RetMetric(feats=feats_train, labels=labels_train)
                 recall_train = []
                 recall_train.append(ret_metric_train.recall_k(1))
@@ -107,6 +130,10 @@ def do_train(
                 logger.info(f"Train recall at iteration {iteration}: {recall_train}")
                 # Log train-val gap for overfitting detection
                 logger.info(f"Overfit gap (train@1 - val@1): {recall_train[0] - recall_curr[0]:.3f}")
+                # Free memory
+                del feats_train, labels_train
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         # Switch back to training mode.
         model.train()
