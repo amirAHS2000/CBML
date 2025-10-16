@@ -21,7 +21,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         # theta = log(beta) and beta = 1 / sigma_sq
         self.theta = nn.Parameter(
-            torch.tensor(2.0, device=self.device)
+            torch.tensor(2.1, device=self.device)
         )
 
         # Prototypes: [num_classes, prototype_per_class, embed_dim]
