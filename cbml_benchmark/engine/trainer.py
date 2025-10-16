@@ -12,6 +12,27 @@ from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
 
 
+def feat_extractor_changed(model, data_loader, logger=None):
+    model.eval()
+    feats = []
+    device = next(model.parameters()).device
+    for i, batch in enumerate(data_loader):
+        imgs = batch[0].to(device)
+        if imgs.dim() == 3:
+            imgs = imgs.unsqueeze(0)
+        if logger:
+            logger.debug(f'Extract Features: [{i + 1}/{len(data_loader)}], Input shape: {imgs.shape}')
+        with torch.no_grad():
+            out = model(imgs).data.cpu().numpy()
+            feats.append(out)
+        del out
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    feats = np.vstack(feats)
+    if logger:
+        logger.debug(f'Extracted features shape: {feats.shape}')
+    return feats
+
 def update_ema_variables(model, ema_model):
     """
     Update the Exponential Moving Average (EMA) model parameters.
@@ -98,7 +119,7 @@ def do_train(
             if iteration == 4800:
                 logger.info('Train Metric Computation')
                 # Stratified sampling: 10 samples per class for CUB-200 (200 classes)
-                samples_per_class = 10
+                samples_per_class = 12
                 label_list = [int(k) for k in train_loader.dataset.label_list]
                 class_to_indices = defaultdict(list)
                 for idx, label in enumerate(label_list):
@@ -120,7 +141,7 @@ def do_train(
                     pin_memory=train_loader.pin_memory if hasattr(train_loader, 'pin_memory') else False
                 )
                 labels_train = np.array([label_list[i] for i in indices])
-                feats_train = feat_extractor(model, subset_loader, logger=logger)
+                feats_train = feat_extractor_changed(model, subset_loader, logger=logger)
                 ret_metric_train = RetMetric(feats=feats_train, labels=labels_train)
                 recall_train = []
                 recall_train.append(ret_metric_train.recall_k(1))
