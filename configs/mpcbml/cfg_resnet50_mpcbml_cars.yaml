@@ -24,8 +24,8 @@ LOSSES:
   MULTI_PROTOTYPE_CBML:
     INIT_METHOD: 'random'
     N_CLASSES: 98        # Cars196 has 196 classes, but often split as 98 train + 98 test
-    PROTOTYPE_PER_CLASS: 1
-    HYPER_WEIGHT: 0.1
+    PROTOTYPE_PER_CLASS: 3
+    HYPER_WEIGHT: 0.2
     REG_WEIGHT: 1.0
     N_NEGATIVES: 1
 
