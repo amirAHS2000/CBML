@@ -3,6 +3,7 @@ import json
 import argparse
 import torch
 import torch.nn.functional as F
+import matplotlib
 
 from cbml_benchmark.config import cfg
 from cbml_benchmark.data import build_data
