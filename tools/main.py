@@ -73,6 +73,7 @@ def train(cfg):
 
     train_loader = build_data(cfg, is_train=True)
     val_loader = build_data(cfg, is_train=False)
+    eval_train_loader = build_data(cfg, is_train=True, is_eval=True)
 
     logger.info(train_loader.dataset)
     logger.info(val_loader.dataset)
@@ -88,6 +89,7 @@ def train(cfg):
         model,
         train_loader,
         val_loader,
+        eval_train_loader,
         optimizer,
         scheduler,
         criterion,

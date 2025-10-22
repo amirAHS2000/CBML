@@ -98,6 +98,7 @@ def do_train(
         model,             # Neural network model to train.
         train_loader,      # DataLoader for training data.
         val_loader,        # DataLoader for validation data.
+        eval_train_loader,
         optimizer,         # Optimizer for updating model parameters.
         scheduler,         # Learning rate scheduler.
         criterion,         # Primary loss function.
@@ -154,7 +155,7 @@ def do_train(
 
             # Compute full train recall every 200 iterations
             if iteration % 200 == 0 or iteration == max_iter:
-                train_recalls = compute_batched_train_recall(model, train_loader, cfg, iteration, logger)
+                train_recalls = compute_batched_train_recall(model, eval_train_loader, cfg, iteration, logger)
                 logger.info(f"Overfit gap (train@1 - val@1): {train_recalls[0] - recall_curr[0]:.3f}")
 
                 # Store for plotting
