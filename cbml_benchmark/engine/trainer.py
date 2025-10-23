@@ -110,18 +110,6 @@ def do_train(
             train_recalls_over_iters.append(recall_curr_train_eval)
             val_recalls_over_iters.append(recall_curr)
 
-            # Plot and save
-            for i, k in enumerate([1, 2, 4, 8]):
-                plt.figure()
-                plt.plot(iters, [r[i] for r in train_recalls_over_iters], label=f'Train R@{k}')
-                plt.plot(iters, [r[i] for r in val_recalls_over_iters], label=f'Val R@{k}')
-                plt.xlabel('Iteration')
-                plt.ylabel(f'Recall@{k}')
-                plt.legend()
-                plt.title(f'Recall@K over Iterations (k={k})')
-                plt.savefig(f'recall_at_{k}_iter_{iteration}.png')
-                plt.close()  # Close to free memory
-
         # Switch back to training mode.
         model.train()
         model.apply(set_bn_eval)  # Freeze BatchNorm layers during training.
@@ -194,6 +182,18 @@ def do_train(
         # Save model checkpoint periodically.
         if iteration % checkpoint_period == 0:
             checkpointer.save("model_{:06d}".format(iteration))
+
+    # Plot and save
+    for i, k in enumerate([1, 2, 4, 8]):
+        plt.figure()
+        plt.plot(iters, [r[i] for r in train_recalls_over_iters], label=f'Train R@{k}')
+        plt.plot(iters, [r[i] for r in val_recalls_over_iters], label=f'Val R@{k}')
+        plt.xlabel('Iteration')
+        plt.ylabel(f'Recall@{k}')
+        plt.legend()
+        plt.title(f'Recall@K over Iterations (k={k})')
+        plt.savefig(f'recall_at_{k}_iter_{iteration}.png')
+        plt.close()  # Close to free memory
 
     # Log total training time.
     total_training_time = time.time() - start_training_time
