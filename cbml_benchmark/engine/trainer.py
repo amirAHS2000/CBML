@@ -3,8 +3,6 @@ import time
 
 import numpy as np
 import torch
-import random
-from collections import defaultdict
 import matplotlib.pyplot as plt
 
 from cbml_benchmark.data.evaluations import RetMetric
@@ -12,27 +10,6 @@ from cbml_benchmark.utils.feat_extractor import feat_extractor
 from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
 
-
-def feat_extractor_changed(model, data_loader, logger=None):
-    model.eval()
-    feats = []
-    device = next(model.parameters()).device
-    for i, batch in enumerate(data_loader):
-        imgs = batch[0].to(device)
-        if imgs.dim() == 3:
-            imgs = imgs.unsqueeze(0)
-        if logger:
-            logger.debug(f'Extract Features: [{i + 1}/{len(data_loader)}], Input shape: {imgs.shape}')
-        with torch.no_grad():
-            out = model(imgs).data.cpu().numpy()
-            feats.append(out)
-        del out
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    feats = np.vstack(feats)
-    if logger:
-        logger.debug(f'Extracted features shape: {feats.shape}')
-    return feats
 
 def update_ema_variables(model, ema_model):
     """
@@ -46,59 +23,13 @@ def update_ema_variables(model, ema_model):
         # Update EMA parameters: new_ema = alpha * old_ema + (1 - alpha) * current_param
         ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
 
-def compute_batched_train_recall(model, train_loader, cfg, iteration, logger, ks=[1,2,4,8]):
-    """Compute recall on full train set in mini-batches."""
-    model.eval()
-    device = next(model.parameters()).device
-    all_embeddings = []
-    all_labels = []
-
-    with torch.no_grad():
-        for batch in train_loader:
-            images, labels = batch[0].to(device), batch[1].to(device)
-            embeddings = model(images)  # [batch_size, embed_dim]
-            all_embeddings.append(embeddings.cpu())
-            all_labels.append(labels.cpu())
-
-    # Concatenate all embeddings and labels
-    all_embeddings = torch.cat(all_embeddings, dim=0).numpy()  # [N_train, D]
-    all_labels = torch.cat(all_labels, dim=0).numpy()  # [N_train]
-
-    # Normalize embeddings
-    all_embeddings = all_embeddings / np.linalg.norm(all_embeddings, axis=1, keepdims=True)
-
-    # Compute similarity matrix in chunks to avoid OOM
-    batch_size = 1000  # Adjust based on memory; ~0.5GB per chunk for 5864 samples
-    recalls = []
-    for k in ks:
-        match_counter = 0
-        for i in range(0, len(all_embeddings), batch_size):
-            query_embeds = all_embeddings[i:i + batch_size]
-            query_labels = all_labels[i:i + batch_size]
-            sim_matrix = np.dot(query_embeds, all_embeddings.T)  # [batch_size, N_train]
-
-            # Mask self-similarities
-            np.fill_diagonal(sim_matrix, -np.inf)
-
-            # Find top-k indices
-            topk_idx = np.argpartition(-sim_matrix, k-1, axis=1)[:, :k]
-            pred_labels = all_labels[topk_idx]
-            correct = np.any(pred_labels == query_labels[:, np.newaxis], axis=2).any(axis=1)
-            match_counter += np.sum(correct)
-
-        recall_k = match_counter / len(all_labels)
-        recalls.append(recall_k)
-
-    model.train()
-    logger.info(f"Train recall at iteration {iteration}: {recalls}")
-    return recalls
 
 def do_train(
         cfg,               # Configuration object with training settings.
         model,             # Neural network model to train.
         train_loader,      # DataLoader for training data.
         val_loader,        # DataLoader for validation data.
-        eval_train_loader,
+        eval_train_loader, # DataLoader for training data (without any augmentationsa or transformations just for recalls calculation)
         optimizer,         # Optimizer for updating model parameters.
         scheduler,         # Learning rate scheduler.
         criterion,         # Primary loss function.
@@ -116,15 +47,17 @@ def do_train(
     meters = MetricLogger(delimiter="  ")  # For tracking and logging training metrics.
     max_iter = len(train_loader)  # Total number of iterations.
 
+    # Initialize tracking variables for best model and time.
     start_iter = arguments["iteration"]
     best_iteration = -1
     best_recall = 0
 
-    # Store recalls for plotting
+    # store recalls for plotting
     train_recalls_over_iters = []
     val_recalls_over_iters = []
     iters = []
-
+    
+    # Start timers for training.
     start_training_time = time.time()
     end = time.time()
 
@@ -133,7 +66,7 @@ def do_train(
         if iteration % cfg.VALIDATION.VERBOSE == 0 or iteration == max_iter:
             model.eval()  # Set model to evaluation mode.
             logger.info('Validation')
-            
+
             # Extract labels and features for validation set.
             labels = val_loader.dataset.label_list
             labels = np.array([int(k) for k in labels])
@@ -141,10 +74,19 @@ def do_train(
 
             # Compute retrieval metrics (e.g., recall at K).
             ret_metric = RetMetric(feats=feats, labels=labels)
-            recall_curr = [ret_metric.recall_k(k) for k in [1, 2, 4, 8]]
+            recall_curr = []
+            recall_curr.append(ret_metric.recall_k(1))
+            recall_curr.append(ret_metric.recall_k(2))
+            recall_curr.append(ret_metric.recall_k(4))
+            recall_curr.append(ret_metric.recall_k(8))
+
+            # Log current recall metrics.
             print(recall_curr)
+
+            # show the value of theta (related to 1/sigma_sq) during training
             logger.info(f"The value of theta is: {criterion.show_theta()}")
 
+            # Update best model if recall@1 improves.
             if recall_curr[0] > best_recall:
                 best_recall = recall_curr[0]
                 best_iteration = iteration
@@ -153,37 +95,50 @@ def do_train(
             else:
                 logger.info(f'Recall@1 at iteration {iteration:06d}: recall@1: {recall_curr[0]:.3f}')
 
-            # Compute full train recall every 200 iterations
-            if iteration % 200 == 0 or iteration == max_iter:
-                train_recalls = compute_batched_train_recall(model, eval_train_loader, cfg, iteration, logger)
-                logger.info(f"Overfit gap (train@1 - val@1): {train_recalls[0] - recall_curr[0]:.3f}")
+            # compute recalls for training set (entire training set)
+            train_eval_labels = eval_train_loader.dataset.label_list
+            train_eval_labels = np.array([int(k) for k in train_eval_labels])
+            train_eval_feats = feat_extractor(model, eval_train_loader, logger=logger)
 
-                # Store for plotting
-                iters.append(iteration)
-                train_recalls_over_iters.append(train_recalls)
-                val_recalls_over_iters.append(recall_curr)
+            # compute retrieval metrics (e.g., recall at k) on training set
+            ret_metric_train_eval = RetMetric(feats=train_eval_feats, labels=train_eval_labels)
+            recall_curr_train_eval = [ret_metric_train_eval.recall_k(k) for k in [1, 2, 4, 8]]
+            print(recall_curr_train_eval)
 
-                # Plot and save
-                for i, k in enumerate([1, 2, 4, 8]):
-                    plt.figure()
-                    plt.plot(iters, [r[i] for r in train_recalls_over_iters], label=f'Train R@{k}')
-                    plt.plot(iters, [r[i] for r in val_recalls_over_iters], label=f'Val R@{k}')
-                    plt.xlabel('Iteration')
-                    plt.ylabel(f'Recall@{k}')
-                    plt.legend()
-                    plt.title(f'Recall@K over Iterations (k={k})')
-                    plt.savefig(f'recall_at_{k}_iter_{iteration}.png')
-                    plt.close()  # Close to free memory
+            # store for plotting
+            iters.append(iteration)
+            train_recalls_over_iters.append(recall_curr_train_eval)
+            val_recalls_over_iters.append(recall_curr)
 
-            model.train()
-            model.apply(set_bn_eval)
+            # Plot and save
+            for i, k in enumerate([1, 2, 4, 8]):
+                plt.figure()
+                plt.plot(iters, [r[i] for r in train_recalls_over_iters], label=f'Train R@{k}')
+                plt.plot(iters, [r[i] for r in val_recalls_over_iters], label=f'Val R@{k}')
+                plt.xlabel('Iteration')
+                plt.ylabel(f'Recall@{k}')
+                plt.legend()
+                plt.title(f'Recall@K over Iterations (k={k})')
+                plt.savefig(f'recall_at_{k}_iter_{iteration}.png')
+                plt.close()  # Close to free memory
 
+        # Switch back to training mode.
+        model.train()
+        model.apply(set_bn_eval)  # Freeze BatchNorm layers during training.
+
+        # Measure data loading time.
         data_time = time.time() - end
-        iteration += 1
+        iteration = iteration + 1  # Increment iteration counter.
         arguments["iteration"] = iteration
+
+        # Update learning rate scheduler.
         scheduler.step()
+
+        # Move data to the specified device.
         images = images.to(device)
         targets = torch.stack([target.to(device) for target in targets])
+
+        # Forward pass through the model to get features.
         feats = model(images)
         if criterion_aux is not None:
             # Use auxiliary loss if provided.
@@ -193,23 +148,30 @@ def do_train(
                 # Combine primary and auxiliary losses with a weight.
                 loss = (1 - cfg.LOSSES.AUX_WEIGHT) * loss + cfg.LOSSES.AUX_WEIGHT * loss_aux
             else:
+                # Special handling for adversarial loss.
                 loss = criterion(feats, targets)
                 feats = torch.split(feats, cfg.LOSSES.ADV_LOSS.CLASS_DIM, dim=1)
                 loss_aux = criterion_aux(feats[0], feats[1])
                 loss = (1 - cfg.LOSSES.AUX_WEIGHT) * loss + cfg.LOSSES.AUX_WEIGHT * loss_aux
         else:
+            # Only use primary loss if no auxiliary loss is provided.
             loss = criterion(feats, targets)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # Backward pass and optimization.
+        optimizer.zero_grad()  # Clear previous gradients.
+        loss.backward()        # Compute gradients.
+        optimizer.step()       # Update model parameters.
 
+        # Measure batch processing time.
         batch_time = time.time() - end
         end = time.time()
+
+        # Update metrics and log.
         meters.update(time=batch_time, data=data_time, loss=loss.item())
         eta_seconds = meters.time.global_avg * (max_iter - iteration)
         eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
 
+        # Log training progress every 20 iterations or at the end.
         if iteration % 20 == 0 or iteration == max_iter:
             logger.info(
                 meters.delimiter.join(
