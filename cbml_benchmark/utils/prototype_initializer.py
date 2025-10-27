@@ -122,7 +122,7 @@ def initialize_prototypes_kmeans(model, cfg):
     normalize_transform = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN,
                                       std=cfg.INPUT.PIXEL_STD)
     transforms = T.Compose([
-        T.Resize(size=cfg.INPUT.CROP_SIZE), # TODO: should it CROP_SIZE or ORIGIN_SIZE
+        T.Resize(size=(cfg.INPUT.CROP_SIZE, cfg.INPUT.CROP_SIZE)), # TODO: should it CROP_SIZE or ORIGIN_SIZE
         T.ToTensor(),
         normalize_transform,
     ])
