@@ -33,7 +33,7 @@ def train(cfg):
         logger.info(f"Initializing prototypes using {cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD}...")
 
         if cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'kmeans':
-            prototypes = initialize_prototypes_kmeans(
+            prototypes, cluster_sizes = initialize_prototypes_kmeans(
                 model=model,
                 cfg=cfg
             )
@@ -42,6 +42,7 @@ def train(cfg):
                 model=model,
                 cfg=cfg
             )
+            cluster_sizes = None  # No cluster sizes for mean init
         elif cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'random':
             prototypes = initialize_prototypes_random(
                 num_classes=cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
@@ -49,12 +50,14 @@ def train(cfg):
                 embed_dim=cfg.MODEL.HEAD.DIM,
                 device=device
             )
+            cluster_sizes = None  # No cluster sizes for random init
         else:
             raise ValueError(f"Unknown initializing method: {cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD}")
 
+        # Set prototypes and weights in the loss
         # normalize the prototypes
         prototypes = F.normalize(prototypes, p=2, dim=2)
-        criterion.set_prototypes(prototypes)
+        criterion.set_prototypes_and_weights(prototypes, cluster_sizes)
         # clear the orginal prototypes tensor
         del prototypes
         torch.cuda.empty_cache()

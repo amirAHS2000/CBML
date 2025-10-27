@@ -122,16 +122,10 @@ def initialize_prototypes_kmeans(model, cfg):
     normalize_transform = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN,
                                       std=cfg.INPUT.PIXEL_STD)
     transforms = T.Compose([
-        T.Resize(size=cfg.INPUT.ORIGIN_SIZE),
-        T.RandomResizedCrop(
-            scale=cfg.INPUT.CROP_SCALE,
-            size=cfg.INPUT.CROP_SIZE
-        ),
-        T.RandomHorizontalFlip(p=cfg.INPUT.FLIP_PROB),
+        T.Resize(size=cfg.INPUT.CROP_SIZE), # TODO: should it CROP_SIZE or ORIGIN_SIZE
         T.ToTensor(),
         normalize_transform,
     ])
-
 
     img_path_cls = {cls: [] for cls in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES)}
     BASE_DIR = os.path.dirname(cfg.DATA.TRAIN_IMG_SOURCE)
@@ -140,6 +134,12 @@ def initialize_prototypes_kmeans(model, cfg):
         cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
         cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
         cfg.MODEL.HEAD.DIM,
+        device=cfg.MODEL.DEVICE
+    )
+
+    cluster_sizes = torch.zeros(
+        cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
+        cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
         device=cfg.MODEL.DEVICE
     )
 
@@ -154,7 +154,7 @@ def initialize_prototypes_kmeans(model, cfg):
 
     for cls in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES):
         if not img_path_cls[cls]:
-            # random initialization if no images for this class
+            # Random initialization if no images for this class
             prototypes[cls] = torch.randn(
                 cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
                 cfg.MODEL.HEAD.DIM,
@@ -163,59 +163,49 @@ def initialize_prototypes_kmeans(model, cfg):
             continue
         
         imgs = []
-
         for img_path in img_path_cls[cls]:
             img = read_image(img_path, mode=cfg.INPUT.MODE)
             transformed_img = transforms(img)
             imgs.append(transformed_img)
         
-        
-        # stack all images for current class
         images = torch.stack(imgs).to(cfg.MODEL.DEVICE)
 
-        # extract features
         with torch.no_grad():
             feats = model(images)
             feats_np = feats.cpu().numpy()
-            # clear the features tensor
             del feats
             torch.cuda.empty_cache()
         
-        # clear the stacked images
         del images
         torch.cuda.empty_cache()
 
         if len(feats_np) >= cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS:
-            # use KMeans if we have enough samples
             kmeans = KMeans(
                 n_clusters=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
                 random_state=0,
-                n_init=10 # multiple initialization for better results
+                n_init=10
             ).fit(feats_np)
             centers = torch.tensor(kmeans.cluster_centers_, dtype=torch.float)
             prototypes[cls] = centers.to(cfg.MODEL.DEVICE)
-            # clear kmeans and centers
+            cluster_sizes[cls] = torch.tensor(np.bincount(kmeans.labels_, minlength=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS), device=cfg.MODEL.DEVICE).float()
             del kmeans
             del centers
             torch.cuda.empty_cache()
         else:
-            # if we don't have enough samples, use mean with noise
             mean_feat = torch.tensor(feats_np.mean(axis=0), dtype=torch.float)
             for k in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS):
                 noise = torch.randn(cfg.MODEL.HEAD.DIM, device=cfg.MODEL.DEVICE) * 0.01
                 prototypes[cls, k] = mean_feat.to(cfg.MODEL.DEVICE) + noise
                 del noise
                 torch.cuda.empty_cache()
-            
-            # clear mean_feat
+            cluster_sizes[cls] = torch.ones(cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS, device=cfg.MODEL.DEVICE) / cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS
             del mean_feat
             torch.cuda.empty_cache()
 
-        # clear the numpy features array
         del feats_np
         gc.collect()
 
     gc.collect()
     torch.cuda.empty_cache()
 
-    return prototypes
+    return prototypes, cluster_sizes

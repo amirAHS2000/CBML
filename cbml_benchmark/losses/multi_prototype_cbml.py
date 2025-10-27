@@ -16,20 +16,18 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.gamma = cfg.LOSSES.MULTI_PROTOTYPE_CBML.HYPER_WEIGHT
         self.lambda_mvc = cfg.LOSSES.MULTI_PROTOTYPE_CBML.REG_WEIGHT
 
-        # Removed n_negatives; always use 1 dominant negative to match formulation
-        # self.n_negatives = cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_NEGATIVES
+        self.n_negatives = cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_NEGATIVES  # e.g., 2-3
 
-        # theta = log(beta) and beta = 1 / sigma_sq
-        self.theta = nn.Parameter(
-            torch.tensor(2.3, device=self.device)
-        )
+        # Theta learnable (init to config value or 2.1)
+        init_theta = cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_THETA if hasattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'INIT_THETA') else 2.1
+        self.theta = nn.Parameter(torch.tensor(init_theta, device=self.device))
 
         # Prototypes: [num_classes, prototype_per_class, embed_dim]
         self.prototypes = nn.Parameter(
             torch.zeros(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
         )
 
-        # Weights: [num_classes, prototype_per_class]
+        # Weights: [num_classes, prototype_per_class], initialized based on cluster sizes
         self.weights = nn.Parameter(
             torch.ones(self.num_classes, self.prototype_per_class, device=self.device) / self.prototype_per_class
         )
@@ -40,11 +38,21 @@ class MultiPrototypeCBMLLoss(nn.Module):
             requires_grad=False
         )
 
-    def set_prototypes(self, prototypes):
+    def set_prototypes_and_weights(self, prototypes, cluster_sizes):
+        """Set prototypes and initialize weights based on k-means cluster sizes."""
         with torch.no_grad():
             if prototypes.device != self.device:
                 prototypes = prototypes.to(self.device)
             self.prototypes.data = prototypes
+
+            # Initialize weights based on cluster sizes (normalized per class)
+            if cluster_sizes is not None and cluster_sizes.shape == (self.num_classes, self.prototype_per_class):
+                normalized_weights = cluster_sizes.float() / torch.sum(cluster_sizes, dim=1, keepdim=True)
+                self.weights.data = normalized_weights.to(self.device)
+            else:
+                # Fallback to uniform if cluster_sizes are invalid
+                self.weights.data = torch.ones_like(self.weights) / self.prototype_per_class
+
             torch.cuda.empty_cache()
 
     def show_theta(self):
@@ -71,7 +79,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         proto_embd_sim = torch.matmul(normalized_embds, normalized_protos.view(-1, D).t())
         proto_embd_sim = proto_embd_sim.view(B, C, K)
 
-        beta = torch.exp(self.theta)
+        beta = torch.exp(self.theta)  # Learnable beta
 
         # Precompute per-sample work
         idx = torch.arange(B, device=self.device)
@@ -91,8 +99,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
             w_pos = normalized_weights[y, best_pos_idx]
             prior_pos = self.class_priors[y]
 
-            # ---------- Select 1 dominant negative prototype ----------
-            # Identify all negative classes
+            # ---------- Select top N dominant negative prototypes ----------
             neg_mask = torch.ones(C, dtype=torch.bool, device=self.device)
             neg_mask[y] = False
             neg_classes = torch.arange(C, device=self.device)[neg_mask]  # [C-1]
@@ -109,21 +116,17 @@ class MultiPrototypeCBMLLoss(nn.Module):
             # Calculate contribution for the HARDEST prototype of each negative class
             neg_class_contribution = beta * neg_class_sims + torch.log(neg_class_priors * neg_class_weights + 1e-9)
 
-            # Select the top 1 (dominant) based on contribution
-            top_1_class_index = torch.topk(neg_class_contribution, k=1, dim=0, sorted=False)[1]  # Scalar index into neg_classes
+            top_n_indices = torch.topk(neg_class_contribution, k=self.n_negatives, dim=0, sorted=False)[1]  # [N]
 
-            # Extract for the dominant negative
-            top_n_neg_sims = neg_class_sims[top_1_class_index]  # [1]
-            top_n_neg_weights = neg_class_weights[top_1_class_index]  # [1]
-            top_n_neg_priors = neg_class_priors[top_1_class_index]  # [1]
+            top_n_neg_sims = neg_class_sims[top_n_indices]  # [N]
+            top_n_neg_weights = neg_class_weights[top_n_indices]  # [N]
+            top_n_neg_priors = neg_class_priors[top_n_indices]  # [N]
 
-            # ---------- Loss calculation (for N=1) ----------
-            # Sim term: beta * pos_sim - log(exp(beta * neg_sim)) = beta * (pos_sim - neg_sim)
-            neg_exp_sum = torch.sum(torch.exp(beta * top_n_neg_sims))  # For N=1, just exp(beta * neg)
+            # ---------- Loss calculation (for N negatives) ----------
+            neg_exp_sum = torch.sum(torch.exp(beta * top_n_neg_sims))
             sim_term = beta * pos_sim - torch.log(neg_exp_sum + 1e-9)
 
-            # Bias term: log(prior_pos * w_pos) - log(prior_neg * w_neg)  (no avg needed for N=1)
-            avg_neg_prior_w = torch.mean(top_n_neg_priors * top_n_neg_weights)  # For N=1, just p- * w-
+            avg_neg_prior_w = torch.mean(top_n_neg_priors * top_n_neg_weights)
             eps = 1e-9
             bias_term = torch.log(prior_pos * w_pos + eps) - torch.log(avg_neg_prior_w + eps)
 
@@ -156,8 +159,6 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         # --- Final Loss Combination ---
         mpcbml_loss = - total_mpcbml_loss / B
-        
         avg_mvc_loss = total_mvc_loss / B
-
         loss = mpcbml_loss + self.lambda_mvc * avg_mvc_loss
         return loss
