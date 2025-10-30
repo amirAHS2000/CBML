@@ -1,9 +1,9 @@
 MODEL:
   BACKBONE:
-    NAME: resnet50
-  PRETRAIN: output-resnet50-cub-mpcbml/model_005000.pth
+    NAME: resnet18
+  PRETRAIN: output-resnet18-cub-mpcbml/model_005000.pth
 
-SAVE_DIR: output-resnet50-cub-mpcbml
+SAVE_DIR: output-resnet18-cub-mpcbml
 
 INPUT:
   MODE: 'RGB'
@@ -26,8 +26,8 @@ LOSSES:
     N_CLASSES: 100
     PROTOTYPE_PER_CLASS: 3
     HYPER_WEIGHT: 0.2
-    REG_WEIGHT: 1.5
-    N_NEGATIVES: 2
+    REG_WEIGHT: 1.0
+    N_NEGATIVES: 1
 
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt
