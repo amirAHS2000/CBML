@@ -83,8 +83,11 @@ def do_train(
             # Log current recall metrics.
             print(recall_curr)
 
+            # MP-CBML statistics (not for other loss functions)
             # show the value of theta (related to 1/sigma_sq) during training
             logger.info(f"The value of theta is: {criterion.show_theta()}")
+            logger.info(f'Prototype stats: {criterion.show_prototype_stats()}')
+            logger.info(f'Weight stats: {criterion.show_weight_stats()}')
 
             # Update best model if recall@1 improves.
             if recall_curr[0] > best_recall:

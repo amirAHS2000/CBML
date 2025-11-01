@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from cbml_benchmark.losses.registry import LOSS
+from cbml_benchmark.utils.prototype_weight_monitor import compute_proto_stats, compute_weight_stats
 
 @LOSS.register('multi_prototype_cbml')
 class MultiPrototypeCBMLLoss(nn.Module):
@@ -45,6 +46,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
                 prototypes = prototypes.to(self.device)
             self.prototypes.data = prototypes
 
+            # Save a frozen copy of the initial prototypes for monitoring
+            self.initial_prototypes = prototypes.detach().clone().to(self.device)
+
             # Initialize weights based on cluster sizes (normalized per class)
             if cluster_sizes is not None and cluster_sizes.shape == (self.num_classes, self.prototype_per_class):
                 normalized_weights = cluster_sizes.float() / torch.sum(cluster_sizes, dim=1, keepdim=True)
@@ -53,10 +57,21 @@ class MultiPrototypeCBMLLoss(nn.Module):
                 # Fallback to uniform if cluster_sizes are invalid
                 self.weights.data = torch.ones_like(self.weights) / self.prototype_per_class
 
+            # Optionally also save the initial weights (for future analysis)
+            # self.initial_weights = self.weights.detach().clone().to(self.device)
+
             torch.cuda.empty_cache()
 
     def show_theta(self):
         return self.theta.item()
+    
+    def show_prototype_stats(self, initial_prototypes=None):
+        if initial_prototypes is None and hasattr(self, "initial_prototypes"):
+            initial_prototypes = self.initial_prototypes
+        return compute_proto_stats(self.prototypes.detach(), initial_prototypes)
+        
+    def show_weight_stats(self):
+        return compute_weight_stats(self.weights.detach())
 
     def forward(self, embeddings, targets):
         # Device consistency
