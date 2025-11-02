@@ -19,6 +19,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         self.n_negatives = cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_NEGATIVES  # e.g., 2-3
 
+        self.proto_anchor_weight = cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTO_ANCHOR_WEIGHT
+        self.weight_entropy_var = cfg.LOSSES.MULTI_PROTOTYPE_CBML.WEIGHT_ENTROPY_VAR
+
         # Theta learnable (init to config value or 2.1)
         init_theta = cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_THETA if hasattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'INIT_THETA') else 2.1
         self.theta = nn.Parameter(torch.tensor(init_theta, device=self.device))
@@ -175,5 +178,31 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # --- Final Loss Combination ---
         mpcbml_loss = - total_mpcbml_loss / B
         avg_mvc_loss = total_mvc_loss / B
-        loss = mpcbml_loss + self.lambda_mvc * avg_mvc_loss
+
+        # ======================= Regularization Terms ============================
+        proto_anchor_reg = 0.0
+        weight_entropy_reg = 0.0
+
+        # --- (1) Prototype Anchor Regularization ---
+        if hasattr(self, "initial_prototypes") and self.proto_anchor_weight > 0:
+            proto_anchor_reg = torch.mean((self.prototypes - self.initial_prototypes) ** 2)
+            proto_anchor_reg = self.proto_anchor_weight * proto_anchor_reg
+
+        # --- (2) Weight Entropy Variance Regularization ---
+        if self.weight_entropy_var > 0:
+            normalized_weights = F.softmax(self.weights, dim=1)
+            entropy_per_class = -torch.sum(
+                normalized_weights * (normalized_weights.clamp_min(1e-9)).log(), dim=1
+            )
+            entropy_var = torch.var(entropy_per_class, unbiased=False)
+            weight_entropy_reg = self.weight_entropy_var * entropy_var
+
+        # ======================= Total Loss ============================
+        loss = (
+            mpcbml_loss
+            + self.lambda_mvc * avg_mvc_loss
+            + proto_anchor_reg
+            + weight_entropy_reg
+        )
+
         return loss
