@@ -1,5 +1,7 @@
+import os
 import datetime
 import time
+import csv
 
 import numpy as np
 import torch
@@ -9,6 +11,13 @@ from cbml_benchmark.data.evaluations import RetMetric
 from cbml_benchmark.utils.feat_extractor import feat_extractor
 from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
+from cbml_benchmark.utils.visualization_utils import (
+    plot_scalar_trends,
+    plot_prototype_displacement,
+    plot_entropy_histogram,
+    plot_prototype_similarity,
+    plot_tsne
+)
 
 
 def update_ema_variables(model, ema_model):
@@ -61,6 +70,10 @@ def do_train(
     start_training_time = time.time()
     end = time.time()
 
+    # define log file
+    stats_log_path = os.path.join('outputs', 'statistics_log.csv')
+    os.makedirs('outputs', exist_ok=True)
+
     for iteration, (images, targets) in enumerate(train_loader, start_iter):
         # Perform validation periodically or at the end of training.
         if iteration % cfg.VALIDATION.VERBOSE == 0 or iteration == max_iter:
@@ -88,6 +101,33 @@ def do_train(
             logger.info(f"The value of theta is: {criterion.show_theta()}")
             logger.info(f'Prototype stats: {criterion.show_prototype_stats()}')
             logger.info(f'Weight stats: {criterion.show_weight_stats()}')
+
+            # extract numerical values
+            theta_val = criterion.show_theta()
+            proto_stats = criterion.show_prototype_stats()
+            weight_stats = criterion.show_weight_stats()
+
+            # write header if file doesn't exist yet
+            if not os.path.exists(stats_log_path):
+                with open(stats_log_path, mode='w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        'iteration', 'theta',
+                        'mean_intra_dist', 'mean_inter_dist', 'mean_displacement',
+                        'mean_entropy', 'mean_max_weight'
+                    ])
+
+            with open(stats_log_path, mode='a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    round(iteration, 5),
+                    round(theta_val, 5),
+                    round(proto_stats['mean_intra_dist'], 5),
+                    round(proto_stats['mean_inter_dist'], 5),
+                    round(proto_stats['mean_displacement'], 5),
+                    round(weight_stats['mean_entropy'], 5),
+                    round(weight_stats['mean_max_weight'], 5)
+                ])
 
             # Update best model if recall@1 improves.
             if recall_curr[0] > best_recall:
@@ -209,6 +249,41 @@ def do_train(
 
     # Log the best iteration and recall achieved.
     logger.info(f"Best iteration: {best_iteration :06d} | best recall {best_recall} ")
+
+    # visualization after training
+    plots_dir = 'outputs/plots'
+    os.makedirs(plots_dir, exist_ok=True)
+
+    # plot scalar trends from logged CSV
+    plot_scalar_trends(log_path='outputs/statistics_log.csv', save_dir=plots_dir)
+
+    # plot prototype displacement and similarity heatmaps
+    try:
+        plot_prototype_displacement(criterion, save_dir=plots_dir)
+        plot_entropy_histogram(criterion, save_dir=plots_dir)
+        plot_prototype_similarity(criterion, save_dir=plots_dir)
+    except Exception as e:
+        logger.warning(f'Visualization skipped due to: {e}')
+
+    # try:
+    #     logger.info("Running t-SNE visualization on validation set...")
+
+    #     # extract validation embeddings and labels
+    #     model.eval()
+    #     labels = val_loader.dataset.label_list
+    #     labels = np.array([int(k) for k in labels])
+    #     feats = feat_extractor(model, val_loader, logger=logger)
+
+    #     # get prototypes from the loss function
+    #     with torch.no_grad():
+    #         prototypes = criterion.prototypes.detach().cpu().numpy()
+
+    #     # plot t-SNE
+    #     plot_tsne(feats, labels, prototypes, save_dir=plots_dir)
+    #     logger.info(f"t-SNE plot saved in {plots_dir}")
+    # except Exception as e:
+    #     logger.warning(f"t-SNE visualization failed: {e}")
+
 
 def do_test(
         model,        # Neural network model to evaluate.
