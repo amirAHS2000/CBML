@@ -115,7 +115,10 @@ def plot_tsne(feats, labels, prototypes, save_dir=None):
 
 def plot_prototype_displacement(model, save_dir=None):
     """Boxplot of prototype displacement relative to initial positions."""
-    displacements = torch.norm(model.prototypes - model.initial_prototypes, dim=-1).cpu().numpy()
+    displacements = torch.norm(
+        model.prototypes.detach() - model.initial_prototypes.detach(),
+        dim=-1
+    ).cpu().numpy()    
     plt.figure(figsize=(8, 5))
     plt.boxplot(displacements.flatten())
     plt.title('Distribution of Prototype Displacements')
@@ -128,8 +131,10 @@ def plot_prototype_displacement(model, save_dir=None):
 def plot_entropy_histogram(model, save_dir=None):
     """Histogram of per-class prototype entropies."""
     with torch.no_grad():
-        weights = F.softmax(model.weights, dim=1)
-        entropy_per_class = -torch.sum(weights * (weights.clamp_min(1e-9)).log(), dim=1).cpu().numpy()
+        weights = F.softmax(model.weights.detach(), dim=1)
+        entropy_per_class = -torch.sum(
+            weights * (weights.clamp_min(1e-9)).log(), dim=1
+        ).cpu().numpy()
     plt.figure(figsize=(8, 5))
     plt.hist(entropy_per_class, bins=30, color='orange', edgecolor='k')
     plt.xlabel('Entropy per class')
@@ -143,7 +148,9 @@ def plot_entropy_histogram(model, save_dir=None):
 def plot_prototype_similarity(model, save_dir=None):
     """Heatmap of prototype-prototype cosine similarity."""
     with torch.no_grad():
-        protos_norm = F.normalize(model.prototypes.view(-1, model.embed_dim), p=2, dim=1)
+        protos_norm = F.normalize(
+            model.prototypes.detach().view(-1, model.embed_dim), p=2, dim=1
+        )
         sim_matrix = torch.matmul(protos_norm, protos_norm.T).cpu().numpy()
     plt.figure(figsize=(8, 6))
     sns.heatmap(sim_matrix, cmap='coolwarm', center=0)
