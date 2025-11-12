@@ -75,6 +75,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
         
     def show_weight_stats(self):
         return compute_weight_stats(self.weights.detach())
+    
+    def show_mvc_value(self):
+        return getattr(self, 'current_mvc_value', None)
 
     def forward(self, embeddings, targets):
         # Device consistency
@@ -198,6 +201,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
         #     weight_entropy_reg = self.weight_entropy_var * entropy_var
 
         # ======================= Total Loss ============================
+        self.current_mvc_value = avg_mvc_loss.detach().item()
+
         loss = (
             mpcbml_loss
             + self.lambda_mvc * avg_mvc_loss

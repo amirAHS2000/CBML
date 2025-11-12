@@ -101,6 +101,7 @@ def do_train(
             logger.info(f"The value of theta is: {criterion.show_theta()}")
             logger.info(f'Prototype stats: {criterion.show_prototype_stats()}')
             logger.info(f'Weight stats: {criterion.show_weight_stats()}')
+            logger.info(f'MVC regularization value: {criterion.show_mvc_value()}')
 
             # extract numerical values
             theta_val = criterion.show_theta()
