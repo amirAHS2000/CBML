@@ -39,6 +39,11 @@ class MultiPrototypeCBMLLoss(nn.Module):
             requires_grad=False
         )
 
+        self.current_mvc_value = 0.0
+        self.current_positive_mean = 0.0
+        self.current_negative_mean = 0.0
+        self.current_xi = 0.0
+
     def set_prototypes_and_weights(self, prototypes, cluster_sizes):
         """Set prototypes and initialize weights based on k-means cluster sizes."""
         with torch.no_grad():

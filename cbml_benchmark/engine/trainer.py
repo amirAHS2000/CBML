@@ -101,12 +101,16 @@ def do_train(
             logger.info(f"The value of theta is: {criterion.show_theta()}")
             logger.info(f'Prototype stats: {criterion.show_prototype_stats()}')
             logger.info(f'Weight stats: {criterion.show_weight_stats()}')
-            logger.info(f'MVC regularization value: {criterion.show_mvc_value()}')
 
             # extract numerical values
             theta_val = criterion.show_theta()
             proto_stats = criterion.show_prototype_stats()
             weight_stats = criterion.show_weight_stats()
+
+            mvc_val = criterion.show_mvc_value() or 0.0
+            pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
+            neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
+            xi_val = getattr(criterion, 'current_xi', 0.0) or 0.0
 
             # write header if file doesn't exist yet
             if not os.path.exists(stats_log_path):
@@ -129,10 +133,10 @@ def do_train(
                     round(proto_stats['mean_displacement'], 5),
                     round(weight_stats['mean_entropy'], 5),
                     round(weight_stats['mean_max_weight'], 5),
-                    round(criterion.show_mvc_value(), 8),
-                    round(criterion.current_positive_mean, 8),
-                    round(criterion.current_negative_mean, 8),
-                    round(criterion.current_xi, 8)
+                    round(mvc_val, 8),
+                    round(pos_mean, 8),
+                    round(neg_mean, 8),
+                    round(xi_val, 8)
                 ])
 
             # Update best model if recall@1 improves.
