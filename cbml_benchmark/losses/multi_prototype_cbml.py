@@ -109,8 +109,11 @@ class MultiPrototypeCBMLLoss(nn.Module):
         pos_proto_sims_all = proto_embd_sim[idx, targets]  # [B, K]
         pos_best_idx_all = pos_proto_sims_all.argmax(dim=-1)  # [B]
 
-        total_mpcbml_loss = 0.0
-        total_mvc_loss = 0.0
+        total_mpcbml_loss = 0.0 # main contrastive-bayesian loss
+        mvc_batch = [] # list of per-sample MVC values (with grad)
+        mu_pos_batch = [] # for logging
+        mu_neg_batch = [] # for logging
+        xi_batch = [] # for logging
 
         for i in range(B):
             y = int(targets[i].item())  # class index
@@ -156,43 +159,60 @@ class MultiPrototypeCBMLLoss(nn.Module):
             total_mpcbml_loss += (sim_term + bias_term)
 
             # ----------------------- Regularization term (MVC loss) ------------------------------------
-            pos_sims_i = proto_embd_sim[i, y]  # [K]
-            pos_weights_i = normalized_weights[y]  # [K]
-            
-            weighted_pos_sim_sum = torch.sum(pos_sims_i * pos_weights_i)
-            weighted_mean_pos = weighted_pos_sim_sum 
-            
-            neg_mask = torch.ones(C, dtype=torch.bool, device=self.device)
-            neg_mask[y] = False
-            
-            neg_sims_flat = proto_embd_sim[i][neg_mask].reshape(-1)
-            neg_weights_flat = normalized_weights[neg_mask].reshape(-1)
-            
-            weighted_neg_sim_sum = torch.sum(neg_sims_flat * neg_weights_flat)
-            weighted_mean_neg = weighted_neg_sim_sum / (C - 1.0)
-            
-            xi_w_i = self.gamma * weighted_mean_pos + (1.0 - self.gamma) * weighted_mean_neg
-            
-            sq_diff = (neg_sims_flat - xi_w_i)**2
-            weighted_sq_diff_sum = torch.sum(sq_diff * neg_weights_flat)
-            
-            mvc_loss_i = weighted_sq_diff_sum / (C - 1.0 + 1e-9)
-            
-            total_mvc_loss += mvc_loss_i
+
+            # positive prototypes for class y
+            pos_sims_i = proto_embd_sim[i, y]         # [K]
+            pos_weights_i = normalized_weights[y]     # [K], sum to 1 due to softmax
+
+            # weighted positive mean similarity μ_pos_i
+            mu_pos_i = torch.sum(pos_sims_i * pos_weights_i)      # scalar
+
+            # all negative prototypes (classes != y)
+            neg_mask_full = torch.ones(C, dtype=torch.bool, device=self.device)
+            neg_mask_full[y] = False
+
+            neg_sims_all = proto_embd_sim[i, neg_mask_full]       # [(C-1), K]
+            neg_weights_all = normalized_weights[neg_mask_full]   # [(C-1), K]
+
+            # flatten negatives
+            neg_sims_flat = neg_sims_all.reshape(-1)              # [(C-1)*K]
+            neg_weights_flat = neg_weights_all.reshape(-1)        # [(C-1)*K]
+
+            # re-normalize negative weights to sum to 1
+            neg_weights_flat = neg_weights_flat / (neg_weights_flat.sum() + 1e-9)
+
+            # weighted negative mean similarity μ_neg_i
+            mu_neg_i = torch.sum(neg_sims_flat * neg_weights_flat)  # scalar
+
+            # CBML-style center ξ_i
+            xi_i = self.gamma * mu_pos_i + (1.0 - self.gamma) * mu_neg_i
+
+            # MVC_i = E[(s_neg - ξ_i)^2] over negative prototypes (weighted)
+            mvc_i = torch.sum((neg_sims_flat - xi_i) ** 2 * neg_weights_flat)
+
+            mvc_batch.append(mvc_i)                       # keep grad for loss
+            mu_pos_batch.append(mu_pos_i.detach())        # logging only
+            mu_neg_batch.append(mu_neg_i.detach())
+            xi_batch.append(xi_i.detach())
 
         # --- Final Loss Combination ---
         mpcbml_loss = - total_mpcbml_loss / B
-        avg_mvc_loss = total_mvc_loss / B
+
+        # --- Aggregate MVC loss (if we had at least one valid sample) ---
+        if len(mvc_batch) > 0:
+            mvc_loss = torch.mean(torch.stack(mvc_batch))
+            self.current_mvc_value = mvc_loss.detach().item()
+            self.current_positive_mean = torch.mean(torch.stack(mu_pos_batch)).item()
+            self.current_negative_mean = torch.mean(torch.stack(mu_neg_batch)).item()
+            self.current_xi = torch.mean(torch.stack(xi_batch)).item()
+        else:
+            mvc_loss = torch.tensor(0.0, device=self.device)
+            self.current_mvc_value = 0.0
+            self.current_positive_mean = 0.0
+            self.current_negative_mean = 0.0
+            self.current_xi = 0.0
 
         # ======================= Total Loss ============================
-        self.current_mvc_value = avg_mvc_loss.detach().item()
-        self.current_positive_mean = weighted_mean_pos.detach().item()
-        self.current_negative_mean = weighted_mean_neg.detach().item()
-        self.current_xi = xi_w_i.detach().item()
-
-        loss = (
-            mpcbml_loss
-            + self.lambda_mvc * avg_mvc_loss
-        )
+        loss = mpcbml_loss + self.lambda_mvc * mvc_loss
 
         return loss
