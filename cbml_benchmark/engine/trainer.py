@@ -115,7 +115,8 @@ def do_train(
                     writer.writerow([
                         'iteration', 'theta',
                         'mean_intra_dist', 'mean_inter_dist', 'mean_displacement',
-                        'mean_entropy', 'mean_max_weight'
+                        'mean_entropy', 'mean_max_weight',
+                        'mvc_value', 'pos_mean', 'neg_mean', 'xi'
                     ])
 
             with open(stats_log_path, mode='a', newline='') as f:
@@ -127,7 +128,11 @@ def do_train(
                     round(proto_stats['mean_inter_dist'], 5),
                     round(proto_stats['mean_displacement'], 5),
                     round(weight_stats['mean_entropy'], 5),
-                    round(weight_stats['mean_max_weight'], 5)
+                    round(weight_stats['mean_max_weight'], 5),
+                    round(criterion.show_mvc_value(), 8),
+                    round(criterion.current_positive_mean, 8),
+                    round(criterion.current_negative_mean, 8),
+                    round(criterion.current_xi, 8)
                 ])
 
             # Update best model if recall@1 improves.
@@ -259,12 +264,12 @@ def do_train(
     plot_scalar_trends(log_path='outputs/statistics_log.csv', save_dir=plots_dir)
 
     # plot prototype displacement and similarity heatmaps
-    try:
-        plot_prototype_displacement(criterion, save_dir=plots_dir)
-        plot_entropy_histogram(criterion, save_dir=plots_dir)
-        plot_prototype_similarity(criterion, save_dir=plots_dir)
-    except Exception as e:
-        logger.warning(f'Visualization skipped due to: {e}')
+    # try:
+    #     plot_prototype_displacement(criterion, save_dir=plots_dir)
+    #     plot_entropy_histogram(criterion, save_dir=plots_dir)
+    #     plot_prototype_similarity(criterion, save_dir=plots_dir)
+    # except Exception as e:
+    #     logger.warning(f'Visualization skipped due to: {e}')
 
     # try:
     #     logger.info("Running t-SNE visualization on validation set...")
