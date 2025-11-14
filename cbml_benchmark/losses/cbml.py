@@ -20,6 +20,10 @@ class CBMLLoss(nn.Module):
         self.loss_weight_p = cfg.LOSSES.CBML_LOSS.WEIGHT_P
         self.loss_weight_n = cfg.LOSSES.CBML_LOSS.WEIGHT_N
 
+        self.current_mvc_value = 0.0
+        self.current_positive_mean = 0.0
+        self.current_negative_mean = 0.0
+        self.current_xi = 0.0
 
     def forward(self, feats, labels):
         assert feats.size(0) == labels.size(0), \
@@ -28,6 +32,11 @@ class CBMLLoss(nn.Module):
         sim_mat = torch.matmul(feats, torch.t(feats))
         epsilon = 1e-5
         loss = list()
+
+        mvc_batch = []
+        mu_pos_batch = []
+        mu_neg_batch = []
+        xi_batch = []
 
         for i in range(batch_size):
 
@@ -76,8 +85,32 @@ class CBMLLoss(nn.Module):
             pos_neg_loss = sigma_ #torch.abs(mean_-mean) + torch.abs(sigma_-sigma)
             loss.append((pos_loss + neg_loss + self.weight*pos_neg_loss))
 
+            mu_pos_i = torch.mean(pos_pair_)
+            mu_neg_i = torch.mean(neg_pair_)
+
+            xi_i = self.hyper_weight * mu_pos_i + (1 - self.hyper_weight) * mu_neg_i
+
+            sigma_i = torch.mean((neg_pair - xi_i)**2)
+
+            mvc_batch.append(sigma_i.detach())
+            mu_pos_batch.append(mu_pos_i.detach())
+            mu_neg_batch.append(mu_neg_i.detach())
+            xi_batch.append(xi_i.detach())
+
         if len(loss) == 0:
             return torch.zeros(1, requires_grad=True).cuda()
+        
+        if len(mvc_batch) > 0:
+            self.current_mvc_value = torch.mean(torch.stack(mvc_batch)).item()
+            self.current_positive_mean = torch.mean(torch.stack(mu_pos_batch)).item()
+            self.current_negative_mean = torch.mean(torch.stack(mu_neg_batch)).item()
+            self.current_xi = torch.mean(torch.stack(xi_batch)).item()
+        else:
+            # safe defaults
+            self.current_mvc_value = 0.0
+            self.current_positive_mean = 0.0
+            self.current_negative_mean = 0.0
+            self.current_xi = 0.0
 
         loss = sum(loss) / batch_size
         return loss
