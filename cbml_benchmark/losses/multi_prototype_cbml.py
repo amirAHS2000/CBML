@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from cbml_benchmark.losses.registry import LOSS
 from cbml_benchmark.utils.prototype_weight_monitor import compute_proto_stats, compute_weight_stats
 
+
 @LOSS.register('multi_prototype_cbml')
 class MultiPrototypeCBMLLoss(nn.Module):
     def __init__(self, cfg):
@@ -20,7 +21,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.n_negatives = cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_NEGATIVES  # e.g., 2-3
 
         # Theta learnable (init to config value or 2.1)
-        init_theta = cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_THETA if hasattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'INIT_THETA') else 2.1
+        init_theta = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'INIT_THETA', 2.1)
         self.theta = nn.Parameter(torch.tensor(init_theta, device=self.device))
 
         # Prototypes: [num_classes, prototype_per_class, embed_dim]
@@ -28,9 +29,12 @@ class MultiPrototypeCBMLLoss(nn.Module):
             torch.zeros(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
         )
 
-        # Weights: [num_classes, prototype_per_class], initialized based on cluster sizes
-        self.weights = torch.zeros(self.num_classes, self.prototype_per_class, device=self.device)
-        self.register_buffer("weights", self.weights)
+        # Weights: [num_classes, prototype_per_class], EM-updated (no gradients)
+        self.weights = nn.Parameter(
+            torch.ones(self.num_classes, self.prototype_per_class, device=self.device)
+            / self.prototype_per_class,
+            requires_grad=False   # IMPORTANT for EM updates
+        )
 
         # Class priors: [num_classes]
         self.class_priors = nn.Parameter(
@@ -38,33 +42,35 @@ class MultiPrototypeCBMLLoss(nn.Module):
             requires_grad=False
         )
 
+        # For logging MVC-related stats
         self.current_mvc_value = 0.0
         self.current_positive_mean = 0.0
         self.current_negative_mean = 0.0
         self.current_xi = 0.0
 
+    @torch.no_grad()
     def set_prototypes_and_weights(self, prototypes, cluster_sizes):
         """Set prototypes and initialize weights based on k-means cluster sizes."""
-        with torch.no_grad():
-            if prototypes.device != self.device:
-                prototypes = prototypes.to(self.device)
-            self.prototypes.data = prototypes
+        # Prototypes
+        prototypes = prototypes.to(self.device)
+        self.prototypes.copy_(prototypes)
 
-            # Save a frozen copy of the initial prototypes for monitoring
-            self.initial_prototypes = prototypes.detach().clone().to(self.device)
+        # Save a frozen copy of the initial prototypes for monitoring
+        self.initial_prototypes = prototypes.detach().clone()
 
-            # Initialize weights based on cluster sizes (normalized per class)
-            # if cluster_sizes is not None and cluster_sizes.shape == (self.num_classes, self.prototype_per_class):
-            #     normalized_weights = cluster_sizes.float() / torch.sum(cluster_sizes, dim=1, keepdim=True)
-            #     self.weights.data = normalized_weights.to(self.device)
-            # else:
-            #     # Fallback to uniform if cluster_sizes are invalid
-            #     self.weights.data = torch.ones_like(self.weights) / self.prototype_per_class
+        # Initialize weights based on cluster sizes (normalized per class)
+        if (
+            cluster_sizes is not None
+            and cluster_sizes.shape == (self.num_classes, self.prototype_per_class)
+        ):
+            cluster_sizes = cluster_sizes.to(self.device).float()
+            normalized_weights = cluster_sizes / (cluster_sizes.sum(dim=1, keepdim=True) + 1e-9)
+            self.weights.copy_(normalized_weights)
+        else:
+            # Fallback to uniform if cluster_sizes are invalid
+            self.weights.fill_(1.0 / self.prototype_per_class)
 
-            # Optionally also save the initial weights (for future analysis)
-            # self.initial_weights = self.weights.detach().clone().to(self.device)
-
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
     def show_theta(self):
         return self.theta.item()
@@ -87,10 +93,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
         model: embedding model
         data_loader: full train set (no augmentation)
         """
-
         print("\n[EM] Updating prototype weights ...")
 
-        # Prepare accumulators
         C = self.num_classes
         K = self.prototype_per_class
 
@@ -105,33 +109,37 @@ class MultiPrototypeCBMLLoss(nn.Module):
             targets = torch.stack([t.to(self.device) for t in targets])
 
             # compute embeddings
-            emb = model(images)
-            emb = F.normalize(emb, p=2, dim=1)                 # [B, D]
+            emb = model(images)                      # [B, D]
+            emb = F.normalize(emb, p=2, dim=1)       # [B, D]
 
             protos = F.normalize(self.prototypes, p=2, dim=2)  # [C, K, D]
             B, D = emb.size()
 
             # compute sims: [B, C, K]
-            sims = torch.matmul(emb, protos.view(C*K, D).t()).view(B, C, K)
+            sims = torch.matmul(emb, protos.view(C * K, D).t()).view(B, C, K)
 
             beta = torch.exp(self.theta).detach()
 
             for i in range(B):
                 c = int(targets[i])
 
-                # responsible only for its own class prototypes
-                s = sims[i, c]                 # [K]
-                r = torch.softmax(beta * s, 0) # responsibilities
+                # responsibilities only over prototypes of class c
+                s = sims[i, c]                      # [K]
+                r = torch.softmax(beta * s, dim=0)  # [K], sum to 1
 
                 weight_accum[c] += r
                 count_accum[c] += 1
 
-        # normalize
+        # normalize to get per-class prototype weights
         for c in range(C):
             if count_accum[c] > 0:
-                self.weights.data[c] = weight_accum[c] / count_accum[c]
+                new_w_c = weight_accum[c] / count_accum[c]  # average responsibilities
+                # keep numeric safety & normalization
+                new_w_c = new_w_c / (new_w_c.sum() + 1e-9)
+                self.weights[c].copy_(new_w_c)
             else:
-                self.weights.data[c] = torch.ones(K, device=self.device) / K
+                # fallback to uniform if no samples seen for class c
+                self.weights[c].fill_(1.0 / K)
 
         print("[EM] Weight update complete.\n")
         
@@ -150,7 +158,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         normalized_embds = F.normalize(embeddings, p=2, dim=1)  # [B, D]
         normalized_protos = F.normalize(self.prototypes, p=2, dim=2)  # [C, K, D]
 
-        # Normalize weights to be positive and sum to 1 for each class using softmax
+        # Here self.weights are already normalized via EM (sum to 1 per class), so use directly.
         normalized_weights = self.weights  # [C, K]
 
         # Prototype-embedding similarities: [B, C, K]
@@ -164,15 +172,16 @@ class MultiPrototypeCBMLLoss(nn.Module):
         pos_proto_sims_all = proto_embd_sim[idx, targets]  # [B, K]
         pos_best_idx_all = pos_proto_sims_all.argmax(dim=-1)  # [B]
 
-        total_mpcbml_loss = 0.0 # main contrastive-bayesian loss
-        mvc_batch = [] # list of per-sample MVC values (with grad)
-        mu_pos_batch = [] # for logging
-        mu_neg_batch = [] # for logging
-        xi_batch = [] # for logging
+        total_mpcbml_loss = 0.0  # main contrastive-bayesian loss
+        mvc_batch = []           # list of per-sample MVC values (with grad)
+        mu_pos_batch = []        # for logging
+        mu_neg_batch = []        # for logging
+        xi_batch = []            # for logging
 
         for i in range(B):
             y = int(targets[i].item())  # class index
 
+            # ---------------------- Main MP-CBML term ----------------------
             # Positive prototype info
             pos_sims = pos_proto_sims_all[i]  # [K]
             best_pos_idx = int(pos_best_idx_all[i].item())
@@ -185,7 +194,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
             neg_mask[y] = False
             neg_classes = torch.arange(C, device=self.device)[neg_mask]  # [C-1]
 
-            # Find the hardest prototype (max sim) for EVERY negative class
+            # Find the hardest prototype (max sim) for EVERY class
             max_sim_per_class = torch.max(proto_embd_sim[i], dim=1)[0]  # [C]
             best_idx_per_class = torch.argmax(proto_embd_sim[i], dim=1)  # [C]
 
@@ -195,13 +204,17 @@ class MultiPrototypeCBMLLoss(nn.Module):
             neg_class_priors = self.class_priors[neg_classes]  # [C-1]
 
             # Calculate contribution for the HARDEST prototype of each negative class
-            neg_class_contribution = beta * neg_class_sims + torch.log(neg_class_priors * neg_class_weights + 1e-9)
+            neg_class_contribution = beta * neg_class_sims + torch.log(
+                neg_class_priors * neg_class_weights + 1e-9
+            )
 
-            top_n_indices = torch.topk(neg_class_contribution, k=self.n_negatives, dim=0, sorted=False)[1]  # [N]
+            top_n_indices = torch.topk(
+                neg_class_contribution, k=self.n_negatives, dim=0, sorted=False
+            )[1]  # [N]
 
-            top_n_neg_sims = neg_class_sims[top_n_indices]  # [N]
+            top_n_neg_sims = neg_class_sims[top_n_indices]      # [N]
             top_n_neg_weights = neg_class_weights[top_n_indices]  # [N]
-            top_n_neg_priors = neg_class_priors[top_n_indices]  # [N]
+            top_n_neg_priors = neg_class_priors[top_n_indices]    # [N]
 
             # ---------- Loss calculation (for N negatives) ----------
             neg_exp_sum = torch.sum(torch.exp(beta * top_n_neg_sims))
@@ -213,11 +226,10 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
             total_mpcbml_loss += (sim_term + bias_term)
 
-            # ----------------------- Regularization term (MVC loss) ------------------------------------
-
+            # ----------------------- MVC regularization term -----------------------
             # positive prototypes for class y
             pos_sims_i = proto_embd_sim[i, y]         # [K]
-            pos_weights_i = normalized_weights[y]     # [K], sum to 1 due to softmax
+            pos_weights_i = normalized_weights[y]     # [K], sum to 1
 
             # weighted positive mean similarity μ_pos_i
             mu_pos_i = torch.sum(pos_sims_i * pos_weights_i)      # scalar
