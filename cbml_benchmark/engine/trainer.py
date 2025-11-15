@@ -163,6 +163,9 @@ def do_train(
             train_recalls_over_iters.append(recall_curr_train_eval)
             val_recalls_over_iters.append(recall_curr)
 
+        if hasattr(criterion, "em_update_weights") and iteration % 400 == 0:
+            criterion.em_update_weights(model, eval_train_loader)
+
         # Switch back to training mode.
         model.train()
         model.apply(set_bn_eval)  # Freeze BatchNorm layers during training.
@@ -266,34 +269,6 @@ def do_train(
 
     # plot scalar trends from logged CSV
     plot_scalar_trends(log_path='outputs/statistics_log.csv', save_dir=plots_dir)
-
-    # plot prototype displacement and similarity heatmaps
-    # try:
-    #     plot_prototype_displacement(criterion, save_dir=plots_dir)
-    #     plot_entropy_histogram(criterion, save_dir=plots_dir)
-    #     plot_prototype_similarity(criterion, save_dir=plots_dir)
-    # except Exception as e:
-    #     logger.warning(f'Visualization skipped due to: {e}')
-
-    # try:
-    #     logger.info("Running t-SNE visualization on validation set...")
-
-    #     # extract validation embeddings and labels
-    #     model.eval()
-    #     labels = val_loader.dataset.label_list
-    #     labels = np.array([int(k) for k in labels])
-    #     feats = feat_extractor(model, val_loader, logger=logger)
-
-    #     # get prototypes from the loss function
-    #     with torch.no_grad():
-    #         prototypes = criterion.prototypes.detach().cpu().numpy()
-
-    #     # plot t-SNE
-    #     plot_tsne(feats, labels, prototypes, save_dir=plots_dir)
-    #     logger.info(f"t-SNE plot saved in {plots_dir}")
-    # except Exception as e:
-    #     logger.warning(f"t-SNE visualization failed: {e}")
-
 
 def do_test(
         model,        # Neural network model to evaluate.

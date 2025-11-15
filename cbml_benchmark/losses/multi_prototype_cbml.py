@@ -29,9 +29,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
         )
 
         # Weights: [num_classes, prototype_per_class], initialized based on cluster sizes
-        self.weights = nn.Parameter(
-            torch.ones(self.num_classes, self.prototype_per_class, device=self.device) / self.prototype_per_class
-        )
+        self.weights = torch.zeros(self.num_classes, self.prototype_per_class, device=self.device)
+        self.register_buffer("weights", self.weights)
 
         # Class priors: [num_classes]
         self.class_priors = nn.Parameter(
@@ -81,6 +80,62 @@ class MultiPrototypeCBMLLoss(nn.Module):
     def show_mvc_value(self):
         return getattr(self, 'current_mvc_value', None)
 
+    @torch.no_grad()
+    def em_update_weights(self, model, data_loader):
+        """
+        Re-estimate mixture weights using EM-style responsibilities.
+        model: embedding model
+        data_loader: full train set (no augmentation)
+        """
+
+        print("\n[EM] Updating prototype weights ...")
+
+        # Prepare accumulators
+        C = self.num_classes
+        K = self.prototype_per_class
+
+        # responsibility sums per class
+        weight_accum = torch.zeros(C, K, device=self.device)
+        count_accum = torch.zeros(C, device=self.device)
+
+        model.eval()
+
+        for images, targets in data_loader:
+            images = images.to(self.device)
+            targets = torch.stack([t.to(self.device) for t in targets])
+
+            # compute embeddings
+            emb = model(images)
+            emb = F.normalize(emb, p=2, dim=1)                 # [B, D]
+
+            protos = F.normalize(self.prototypes, p=2, dim=2)  # [C, K, D]
+            B, D = emb.size()
+
+            # compute sims: [B, C, K]
+            sims = torch.matmul(emb, protos.view(C*K, D).t()).view(B, C, K)
+
+            beta = torch.exp(self.theta).detach()
+
+            for i in range(B):
+                c = int(targets[i])
+
+                # responsible only for its own class prototypes
+                s = sims[i, c]                 # [K]
+                r = torch.softmax(beta * s, 0) # responsibilities
+
+                weight_accum[c] += r
+                count_accum[c] += 1
+
+        # normalize
+        for c in range(C):
+            if count_accum[c] > 0:
+                self.weights.data[c] = weight_accum[c] / count_accum[c]
+            else:
+                self.weights.data[c] = torch.ones(K, device=self.device) / K
+
+        print("[EM] Weight update complete.\n")
+        
+
     def forward(self, embeddings, targets):
         # Device consistency
         if embeddings.device != self.device:
@@ -96,7 +151,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         normalized_protos = F.normalize(self.prototypes, p=2, dim=2)  # [C, K, D]
 
         # Normalize weights to be positive and sum to 1 for each class using softmax
-        normalized_weights = F.softmax(self.weights, dim=1)  # [C, K]
+        normalized_weights = self.weights  # [C, K]
 
         # Prototype-embedding similarities: [B, C, K]
         proto_embd_sim = torch.matmul(normalized_embds, normalized_protos.view(-1, D).t())
