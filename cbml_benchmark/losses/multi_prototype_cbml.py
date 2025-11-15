@@ -54,12 +54,12 @@ class MultiPrototypeCBMLLoss(nn.Module):
             self.initial_prototypes = prototypes.detach().clone().to(self.device)
 
             # Initialize weights based on cluster sizes (normalized per class)
-            if cluster_sizes is not None and cluster_sizes.shape == (self.num_classes, self.prototype_per_class):
-                normalized_weights = cluster_sizes.float() / torch.sum(cluster_sizes, dim=1, keepdim=True)
-                self.weights.data = normalized_weights.to(self.device)
-            else:
-                # Fallback to uniform if cluster_sizes are invalid
-                self.weights.data = torch.ones_like(self.weights) / self.prototype_per_class
+            # if cluster_sizes is not None and cluster_sizes.shape == (self.num_classes, self.prototype_per_class):
+            #     normalized_weights = cluster_sizes.float() / torch.sum(cluster_sizes, dim=1, keepdim=True)
+            #     self.weights.data = normalized_weights.to(self.device)
+            # else:
+            #     # Fallback to uniform if cluster_sizes are invalid
+            #     self.weights.data = torch.ones_like(self.weights) / self.prototype_per_class
 
             # Optionally also save the initial weights (for future analysis)
             # self.initial_weights = self.weights.detach().clone().to(self.device)
