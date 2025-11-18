@@ -20,10 +20,12 @@ class CBMLLoss(nn.Module):
         self.loss_weight_p = cfg.LOSSES.CBML_LOSS.WEIGHT_P
         self.loss_weight_n = cfg.LOSSES.CBML_LOSS.WEIGHT_N
 
+        # saved these values for logging
         self.current_mvc_value = 0.0
         self.current_positive_mean = 0.0
         self.current_negative_mean = 0.0
         self.current_xi = 0.0
+        self.cbml_total = 0.0 # TODO: check the batch calculation
 
     def forward(self, feats, labels):
         assert feats.size(0) == labels.size(0), \
@@ -37,6 +39,7 @@ class CBMLLoss(nn.Module):
         mu_pos_batch = []
         mu_neg_batch = []
         xi_batch = []
+        pos_neg_batch = []
 
         for i in range(batch_size):
 
@@ -90,16 +93,23 @@ class CBMLLoss(nn.Module):
 
             xi_i = self.hyper_weight * mu_pos_i + (1 - self.hyper_weight) * mu_neg_i
 
-            sigma_i = torch.mean((neg_pair - xi_i)**2)
+            # sigma_i = torch.mean((neg_pair - xi_i)**2)
+            sigma_i = torch.mean(torch.sum(torch.pow(neg_pair_ - xi_i, 2)))
 
             mvc_batch.append(sigma_i.detach())
             mu_pos_batch.append(mu_pos_i.detach())
             mu_neg_batch.append(mu_neg_i.detach())
             xi_batch.append(xi_i.detach())
+            pos_neg_batch.append((pos_loss.detach() + neg_loss.detach()))
 
         if len(loss) == 0:
             return torch.zeros(1, requires_grad=True).cuda()
         
+        if len(pos_neg_batch) > 0:
+            self.cbml_total = torch.mean(torch.stack(pos_neg_batch)).item()
+        else:
+            self.cbml_total = 0.0
+
         if len(mvc_batch) > 0:
             self.current_mvc_value = torch.mean(torch.stack(mvc_batch)).item()
             self.current_positive_mean = torch.mean(torch.stack(mu_pos_batch)).item()
