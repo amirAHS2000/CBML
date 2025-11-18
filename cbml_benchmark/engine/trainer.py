@@ -97,47 +97,77 @@ def do_train(
             print(recall_curr)
 
             # MP-CBML statistics (not for other loss functions)
-            # show the value of theta (related to 1/sigma_sq) during training
-            logger.info(f"The value of theta is: {criterion.show_theta()}")
-            logger.info(f'Prototype stats: {criterion.show_prototype_stats()}')
-            logger.info(f'Weight stats: {criterion.show_weight_stats()}')
+            if cfg.LOSSES.NAME == 'multi_prototype_cbml':
+                # show the value of theta (related to 1/sigma_sq) during training
+                # logger.info(f"The value of theta is: {criterion.show_theta()}")
+                # logger.info(f'Prototype stats: {criterion.show_prototype_stats()}')
+                # logger.info(f'Weight stats: {criterion.show_weight_stats()}')
 
-            # extract numerical values
-            theta_val = criterion.show_theta()
-            proto_stats = criterion.show_prototype_stats()
-            weight_stats = criterion.show_weight_stats()
+                # extract numerical values
+                theta_val = criterion.show_theta()
+                proto_stats = criterion.show_prototype_stats()
+                weight_stats = criterion.show_weight_stats()
 
-            mvc_val = criterion.show_mvc_value() or 0.0
-            pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
-            neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
-            xi_val = getattr(criterion, 'current_xi', 0.0) or 0.0
+                mvc_val = criterion.show_mvc_value() or 0.0
+                pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
+                neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
+                xi_val = getattr(criterion, 'current_xi', 0.0) or 0.0
+                loss_main_term = getattr(criterion, 'mpcbml_total', 0.0) or 0.0
 
-            # write header if file doesn't exist yet
-            if not os.path.exists(stats_log_path):
-                with open(stats_log_path, mode='w', newline='') as f:
+                # write header if file doesn't exist yet
+                if not os.path.exists(stats_log_path):
+                    with open(stats_log_path, mode='w', newline='') as f:
+                        writer = csv.writer(f)
+                        writer.writerow([
+                            'iteration', 'theta',
+                            'mean_intra_dist', 'mean_inter_dist', 'mean_displacement',
+                            'mean_entropy', 'mean_max_weight',
+                            'mvc_value', 'pos_mean', 'neg_mean', 'xi', 'main_term'
+                        ])
+
+                with open(stats_log_path, mode='a', newline='') as f:
                     writer = csv.writer(f)
                     writer.writerow([
-                        'iteration', 'theta',
-                        'mean_intra_dist', 'mean_inter_dist', 'mean_displacement',
-                        'mean_entropy', 'mean_max_weight',
-                        'mvc_value', 'pos_mean', 'neg_mean', 'xi'
+                        round(iteration, 5),
+                        round(theta_val, 5),
+                        round(proto_stats['mean_intra_dist'], 5),
+                        round(proto_stats['mean_inter_dist'], 5),
+                        round(proto_stats['mean_displacement'], 5),
+                        round(weight_stats['mean_entropy'], 5),
+                        round(weight_stats['mean_max_weight'], 5),
+                        round(mvc_val, 8),
+                        round(pos_mean, 8),
+                        round(neg_mean, 8),
+                        round(xi_val, 8),
+                        round(loss_main_term, 8)
                     ])
 
-            with open(stats_log_path, mode='a', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    round(iteration, 5),
-                    round(theta_val, 5),
-                    round(proto_stats['mean_intra_dist'], 5),
-                    round(proto_stats['mean_inter_dist'], 5),
-                    round(proto_stats['mean_displacement'], 5),
-                    round(weight_stats['mean_entropy'], 5),
-                    round(weight_stats['mean_max_weight'], 5),
-                    round(mvc_val, 8),
-                    round(pos_mean, 8),
-                    round(neg_mean, 8),
-                    round(xi_val, 8)
-                ])
+            if cfg.LOSSES.NAME == 'cbml_loss':
+                mvc_val = getattr(criterion, 'current_mvc_value', 0.0) or 0.0
+                pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
+                neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
+                xi_val = getattr(criterion, 'current_xi', 0.0) or 0.0
+                loss_main_term = getattr(criterion, 'cbml_total', 0.0) or 0.0
+
+                # write header if file doesn't exist yet
+                if not os.path.exists(stats_log_path):
+                    with open(stats_log_path, mode='w', newline='') as f:
+                        writer = csv.writer(f)
+                        writer.writerow([
+                            'iteration',
+                            'mvc_value', 'pos_mean', 'neg_mean', 'xi', 'main_term'
+                        ])
+
+                with open(stats_log_path, mode='a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        round(iteration, 5),
+                        round(mvc_val, 8),
+                        round(pos_mean, 8),
+                        round(neg_mean, 8),
+                        round(xi_val, 8),
+                        round(loss_main_term, 8)
+                    ])
 
             # Update best model if recall@1 improves.
             if recall_curr[0] > best_recall:
@@ -163,7 +193,8 @@ def do_train(
             train_recalls_over_iters.append(recall_curr_train_eval)
             val_recalls_over_iters.append(recall_curr)
 
-        if hasattr(criterion, "em_update_weights") and iteration % 400 == 0:
+        # TODO: iteration period can be changed
+        if hasattr(criterion, "em_update_weights") and iteration % 20 == 0:
             criterion.em_update_weights(model, eval_train_loader)
 
         # Switch back to training mode.
