@@ -16,7 +16,7 @@ def plot_scalar_trends(log_path, save_dir=None):
     """
     df = pd.read_csv(log_path)
     plt.figure(figsize=(10, 6))
-    for col in ['theta', 'mvc_value', 'pos_mean', 'neg_mean', 'xi', 'main_term']:
+    for col in ['mvc_value', 'pos_mean', 'neg_mean', 'xi', 'main_term']:
         plt.plot(df['iteration'], df[col], label=col)
     plt.xlabel('Iteration')
     plt.ylabel('Value')
