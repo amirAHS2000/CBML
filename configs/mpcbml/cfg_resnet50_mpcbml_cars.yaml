@@ -28,8 +28,6 @@ LOSSES:
     HYPER_WEIGHT: 0.2
     REG_WEIGHT: 1.0
     N_NEGATIVES: 1
-    PROTO_ANCHOR_WEIGHT: 0.001
-    WEIGHT_ENTROPY_VAR: 0.1
 
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/Cars196/train.txt
