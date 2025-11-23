@@ -19,8 +19,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.lambda_mvc = cfg.LOSSES.MULTI_PROTOTYPE_CBML.REG_WEIGHT
 
         # Learnable theta (log beta)
-        init_theta = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'INIT_THETA', 2.3)
-        self.theta = nn.Parameter(torch.tensor(init_theta, device=self.device))
+        # init_theta = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'INIT_THETA', 2.3)
+        # self.theta = nn.Parameter(torch.tensor(init_theta, device=self.device))
 
         # Prototypes [C, K, D]
         self.prototypes = nn.Parameter(
@@ -75,8 +75,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         torch.cuda.empty_cache()
 
-    def show_theta(self):
-        return self.theta.item()
+    # def show_theta(self):
+    #     return self.theta.item()
     
     def show_prototype_stats(self, initial_prototypes=None):
         if initial_prototypes is None and hasattr(self, "initial_prototypes"):
@@ -159,7 +159,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
         sims = torch.matmul(z, protos.view(C*K, D).t()).view(B, C, K)  # [B,C,K]
         weighted_sims = sims * W.unsqueeze(0)                          # [B,C,K]
 
-        beta = torch.exp(self.theta)
+        # beta = torch.exp(self.theta)
+        beta = 1.0
 
         # -----------------------------------------------------
         # 2. Masks
