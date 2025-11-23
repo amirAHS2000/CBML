@@ -104,7 +104,8 @@ def do_train(
                 # logger.info(f'Weight stats: {criterion.show_weight_stats()}')
 
                 # extract numerical values
-                theta_val = criterion.show_theta()
+                # theta_val = criterion.show_theta()
+                theta_val = 0.0
                 proto_stats = criterion.show_prototype_stats()
                 weight_stats = criterion.show_weight_stats()
 
