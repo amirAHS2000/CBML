@@ -10,19 +10,21 @@ from cbml_benchmark.utils.prototype_weight_monitor import compute_proto_stats, c
 class MultiPrototypeCBMLLoss(nn.Module):
     def __init__(self, cfg):
         super(MultiPrototypeCBMLLoss, self).__init__()
-        self.num_classes = cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES
-        self.prototype_per_class = cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS
-        self.embed_dim = cfg.MODEL.HEAD.DIM
-        self.device = torch.device(cfg.MODEL.DEVICE)
 
-        self.gamma = cfg.LOSSES.MULTI_PROTOTYPE_CBML.HYPER_WEIGHT
-        self.lambda_mvc = cfg.LOSSES.MULTI_PROTOTYPE_CBML.REG_WEIGHT
+        self.num_classes = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'N_CLASSES', 100)
+        self.embed_dim = getattr(cfg.MODEL.HEAD, 'DIM', 512)
+        self.device_name = getattr(cfg.MODEL, 'DEVICE', 'cuda')
+        self.device = torch.device(self.device_name)
+
+        self.gamma = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'HYPER_WEIGHT', 0.2)
+        self.lambda_mvc = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'REG_WEIGHT', 20.0)
 
         # Learnable theta (log beta)
         # init_theta = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'INIT_THETA', 2.3)
         # self.theta = nn.Parameter(torch.tensor(init_theta, device=self.device))
 
         # Prototypes [C, K, D]
+        self.prototype_per_class = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'PROTOTYPE_PER_CLASS', 3)
         self.prototypes = nn.Parameter(
             torch.zeros(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
         )
@@ -41,7 +43,6 @@ class MultiPrototypeCBMLLoss(nn.Module):
         )
 
         # MVC logging
-
         self.current_mvc_value = 0.0
         self.current_positive_mean = 0.0
         self.current_negative_mean = 0.0
@@ -75,6 +76,17 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         torch.cuda.empty_cache()
 
+    def _enforce_constraints(self):
+        """Enforce normalization constraints."""
+        with torch.no_grad():
+            # Normalize prototypes to unit norm
+            norms = self.prototypes.norm(p=2, dim=2, keepdim=True)
+            self.prototypes.div_(norms.clamp(min=1e-8))
+            
+            # Normalize weights to sum to 1
+            weight_sums = self.weights.sum(dim=1, keepdim=True)
+            self.weights.div_(weight_sums.clamp(min=1e-8))
+
     # def show_theta(self):
     #     return self.theta.item()
     
@@ -90,7 +102,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         return getattr(self, 'current_mvc_value', None)
 
     # ------------------------------------------------------
-    # EM UPDATE (Corrected — uses w * exp(beta s))
+    # EM UPDATE (for weights)
     # ------------------------------------------------------
     @torch.no_grad()
     def em_update_weights(self, model, data_loader):
@@ -101,8 +113,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
         count_accum = torch.zeros(C, device=self.device)
 
         model.eval()
-        protos = F.normalize(self.prototypes, p=2, dim=2)
-        beta = torch.exp(self.theta).detach()
+        protos = self.prototypes
+        # beta = torch.exp(self.theta).detach()
+        beta = 1.0
 
         for images, targets in data_loader:
             images = images.to(self.device)
@@ -132,12 +145,14 @@ class MultiPrototypeCBMLLoss(nn.Module):
             else:
                 self.weights[c].fill_(1.0 / K)
 
+        self._enforce_constraints()
         print("[EM] Weight update complete.\n")
 
     # ------------------------------------------------------
     # FORWARD: Complete MP-CBML + MVC
     # ------------------------------------------------------
     def forward(self, embeddings, targets):
+        self._enforce_constraints()
 
         embeddings = embeddings.to(self.device)
         targets = targets.to(self.device)
@@ -150,8 +165,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # 0. Normalize
         # -----------------------------------------------------
         z = F.normalize(embeddings, p=2, dim=1)              # [B, D]
-        protos = F.normalize(self.prototypes, p=2, dim=2)    # [C, K, D]
-        W = self.weights                                      # [C, K]
+        protos = self.prototypes    # [C, K, D]
+        W = self.weights                                     # [C, K]
+        # W = F.softmax(self.weights, dim=1)
 
         # -----------------------------------------------------
         # 1. Compute similarities
@@ -211,7 +227,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # 5. MAIN LOSS
         # -----------------------------------------------------
         sim_term = beta * (pos_sim - best_neg_sim)
-        bias_term = torch.log(prior_pos * w_pos + eps) - torch.log(prior_neg * w_neg + eps)
+        bias_term = torch.log(prior_pos + eps) + torch.log(w_pos + eps) \
+           - torch.log(prior_neg + eps) - torch.log(w_neg + eps)
 
         mpcbml_loss = -(sim_term + bias_term).mean()
 
