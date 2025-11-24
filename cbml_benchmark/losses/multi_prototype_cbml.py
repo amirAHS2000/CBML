@@ -29,12 +29,22 @@ class MultiPrototypeCBMLLoss(nn.Module):
             torch.zeros(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
         )
 
-        # Mixture weights [C, K], updated via EM (no gradients)
-        self.weights = nn.Parameter(
-            torch.ones(self.num_classes, self.prototype_per_class, device=self.device)
-            / self.prototype_per_class,
-            requires_grad=False
-        )
+        # choose between EM-based weights or learnable softmax weights
+        self.use_learnable_weights = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'LEARNABLE_WEIGHTS', False)
+
+        if self.use_learnable_weights:
+            # learnable log-weights with gradients (softmax approach)
+            self.log_weights = nn.Parameter(
+                torch.zeros(self.num_classes, self.prototype_per_class, device=self.device),
+                requires_grad=True
+            )
+        else:
+            # EM-based weights (no gradients)
+            self.weights = nn.Parameter(
+                torch.ones(self.num_classes, self.prototype_per_class, device=self.device)
+                / self.prototype_per_class,
+                requires_grad=False
+            )
 
         # Class priors [C]
         self.class_priors = nn.Parameter(
@@ -42,16 +52,45 @@ class MultiPrototypeCBMLLoss(nn.Module):
             requires_grad=False
         )
 
-        # MVC logging
+        # ==========================================
+        # ENHANCED LOGGING VARIABLES
+        # ==========================================
+        
+        # Core loss components (for oscillation debugging)
+        self.mpcbml_total = 0.0              # Total MP-CBML loss
+        self.sim_mpcbml_total = 0.0          # Similarity term only: -β(s+ - s-)
+        self.bias_mpcbml_total = 0.0         # Bias term only: -log(p+w+/p-w-)
+        
+        # Bias term breakdown
+        self.prior_bias_total = 0.0          # log(p+/p-) component
+        self.weight_bias_total = 0.0         # log(w+/w-) component
+        
+        # MVC components
         self.current_mvc_value = 0.0
-        self.current_positive_mean = 0.0
-        self.current_negative_mean = 0.0
-        self.current_xi = 0.0
+        self.current_positive_mean = 0.0     # μ+
+        self.current_negative_mean = 0.0     # μ-
+        self.current_xi = 0.0                # ξ decision center
+        
+        # Selected similarities
+        self.current_pos_sim = 0.0           # s+ (selected positive similarity)
+        self.current_neg_sim = 0.0           # s- (selected negative similarity)
+        self.current_sim_margin = 0.0        # s+ - s-
+        
+        # Total loss
+        self.current_total_loss = 0.0        # mpcbml + λ*mvc
+        self.current_mvc_contribution = 0.0  # λ*mvc
 
-        # MP-CBML logging
-        self.mpcbml_total = 0.0
+    @property
+    def weights(self):
+        """
+        Return normalized weights.
+        If using learnable weights, apply softmax. Otherwise, return EM-based weights directly.
+        """
+        if self.use_learnable_weights:
+            return F.softmax(self.log_weights, dim=1)
+        else:
+            return self._parameters['weights']
 
-    
     @torch.no_grad()
     def set_prototypes_and_weights(self, prototypes, cluster_sizes):
         """Set prototypes and initialize weights based on k-means cluster sizes."""
@@ -62,17 +101,26 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # Save a frozen copy of the initial prototypes for monitoring
         self.initial_prototypes = prototypes.detach().clone()
 
-        # Initialize weights based on cluster sizes (normalized per class)
+        # Initialize weights based on cluster sizes
         if (
             cluster_sizes is not None
             and cluster_sizes.shape == (self.num_classes, self.prototype_per_class)
         ):
             cluster_sizes = cluster_sizes.to(self.device).float()
             normalized_weights = cluster_sizes / (cluster_sizes.sum(dim=1, keepdim=True) + 1e-9)
-            self.weights.copy_(normalized_weights)
+            
+            if self.use_learnable_weights:
+                # Convert to log-space for softmax parameterization
+                self.log_weights.copy_(torch.log(normalized_weights + 1e-9))
+            else:
+                # Direct copy for EM-based weights
+                self._parameters['weights'].copy_(normalized_weights)
         else:
-            # Fallback to uniform if cluster_sizes are invalid
-            self.weights.fill_(1.0 / self.prototype_per_class)
+            # Fallback to uniform
+            if self.use_learnable_weights:
+                self.log_weights.fill_(0.0)  # softmax([0,0,0]) = uniform
+            else:
+                self._parameters['weights'].fill_(1.0 / self.prototype_per_class)
 
         torch.cuda.empty_cache()
 
@@ -83,12 +131,11 @@ class MultiPrototypeCBMLLoss(nn.Module):
             norms = self.prototypes.norm(p=2, dim=2, keepdim=True)
             self.prototypes.div_(norms.clamp(min=1e-8))
             
-            # Normalize weights to sum to 1
-            weight_sums = self.weights.sum(dim=1, keepdim=True)
-            self.weights.div_(weight_sums.clamp(min=1e-8))
-
-    # def show_theta(self):
-    #     return self.theta.item()
+            # Normalize weights (only if using EM-based approach)
+            if not self.use_learnable_weights:
+                weight_sums = self._parameters['weights'].sum(dim=1, keepdim=True)
+                self._parameters['weights'].div_(weight_sums.clamp(min=1e-8))
+            # If using learnable weights, softmax automatically normalizes
     
     def show_prototype_stats(self, initial_prototypes=None):
         if initial_prototypes is None and hasattr(self, "initial_prototypes"):
@@ -98,14 +145,43 @@ class MultiPrototypeCBMLLoss(nn.Module):
     def show_weight_stats(self):
         return compute_weight_stats(self.weights.detach())
     
+    def show_log_weight_stats(self):
+        """Show statistics of raw log-weights (only for learnable weights)."""
+        if self.use_learnable_weights:
+            log_w = self.log_weights.detach()
+            return {
+                'mean': log_w.mean().item(),
+                'std': log_w.std().item(),
+                'min': log_w.min().item(),
+                'max': log_w.max().item(),
+                'range': (log_w.max() - log_w.min()).item()
+            }
+        else:
+            return None
+        
+    def show_weight_entropy(self):
+        """Compute entropy of weight distribution per class."""
+        W = self.weights.detach()  # [C, K]
+        entropy = -(W * torch.log(W + 1e-9)).sum(dim=1)  # [C]
+        return {
+            'mean_entropy': entropy.mean().item(),
+            'min_entropy': entropy.min().item(),
+            'max_entropy': entropy.max().item(),
+            'std_entropy': entropy.std().item()
+        }
+    
     def show_mvc_value(self):
         return getattr(self, 'current_mvc_value', None)
 
     # ------------------------------------------------------
-    # EM UPDATE (for weights)
+    # EM UPDATE (for weights) - only used when not using learnable weights
     # ------------------------------------------------------
     @torch.no_grad()
     def em_update_weights(self, model, data_loader):
+        if self.use_learnable_weights:
+            print("[EM] Skipped: using learnable softmax weights instead.")
+            return
+            
         print("\n[EM] Updating prototype weights ...")
         C, K = self.num_classes, self.prototype_per_class
 
@@ -114,7 +190,6 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         model.eval()
         protos = self.prototypes
-        # beta = torch.exp(self.theta).detach()
         beta = 1.0
 
         for images, targets in data_loader:
@@ -129,8 +204,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
                 s = sims[i, c]         # [K]
                 w = self.weights[c]    # [K]
 
-                # Correct EM responsibility:
-                # r ∝ w_l * exp(beta * s_l)
+                # EM responsibility: r ∝ w_l * exp(beta * s_l)
                 r = w * torch.exp(beta * s)
                 r = r / (r.sum() + 1e-9)
 
@@ -141,9 +215,9 @@ class MultiPrototypeCBMLLoss(nn.Module):
             if count_accum[c] > 0:
                 new_w = weight_accum[c] / count_accum[c]
                 new_w = new_w / (new_w.sum() + 1e-9)
-                self.weights[c].copy_(new_w)
+                self._parameters['weights'][c].copy_(new_w)
             else:
-                self.weights[c].fill_(1.0 / K)
+                self._parameters['weights'][c].fill_(1.0 / K)
 
         self._enforce_constraints()
         print("[EM] Weight update complete.\n")
@@ -167,7 +241,6 @@ class MultiPrototypeCBMLLoss(nn.Module):
         z = F.normalize(embeddings, p=2, dim=1)              # [B, D]
         protos = self.prototypes    # [C, K, D]
         W = self.weights                                     # [C, K]
-        # W = F.softmax(self.weights, dim=1)
 
         # -----------------------------------------------------
         # 1. Compute similarities
@@ -223,14 +296,36 @@ class MultiPrototypeCBMLLoss(nn.Module):
         w_neg = neg_W[b_idx, best_neg_class, neg_best_k[b_idx, best_neg_class]]             # [B]
         prior_neg = neg_priors[b_idx, best_neg_class]                                       # [B]
 
+        # Log selected similarities
+        self.current_pos_sim = pos_sim.mean().item()
+        self.current_neg_sim = best_neg_sim.mean().item()
+        self.current_sim_margin = (pos_sim - best_neg_sim).mean().item()
+
         # -----------------------------------------------------
         # 5. MAIN LOSS
         # -----------------------------------------------------
-        sim_term = beta * (pos_sim - best_neg_sim)
-        bias_term = torch.log(prior_pos + eps) + torch.log(w_pos + eps) \
-           - torch.log(prior_neg + eps) - torch.log(w_neg + eps)
-
+        # Similarity term: β(s+ - s-)
+        sim_term = beta * (pos_sim - best_neg_sim)  # [B]
+        
+        # Bias components
+        log_prior_pos = torch.log(prior_pos + eps)
+        log_prior_neg = torch.log(prior_neg + eps)
+        log_w_pos = torch.log(w_pos + eps)
+        log_w_neg = torch.log(w_neg + eps)
+        
+        prior_bias = log_prior_pos - log_prior_neg  # [B]
+        weight_bias = log_w_pos - log_w_neg         # [B]
+        bias_term = prior_bias + weight_bias        # [B]
+        
+        # Total MP-CBML loss
         mpcbml_loss = -(sim_term + bias_term).mean()
+
+        # Log ALL components individually
+        self.sim_mpcbml_total = (-sim_term).mean().item()      # Negative similarity term
+        self.bias_mpcbml_total = (-bias_term).mean().item()    # Negative bias term
+        self.prior_bias_total = prior_bias.mean().item()       # Prior contribution
+        self.weight_bias_total = weight_bias.mean().item()     # Weight contribution
+        self.mpcbml_total = mpcbml_loss.item()                 # Total contrastive loss
 
         # -----------------------------------------------------
         # 6. MVC (global negative)
@@ -246,14 +341,18 @@ class MultiPrototypeCBMLLoss(nn.Module):
         mvc = ((neg_sims_flat - xi[:,None])**2 * neg_weights_flat).sum(dim=-1)
         mvc_loss = mvc.mean()
 
-        # Logging
+        # Log MVC components
         self.current_mvc_value = mvc_loss.item()
         self.current_positive_mean = mu_pos.mean().item()
         self.current_negative_mean = mu_neg.mean().item()
         self.current_xi = xi.mean().item()
-        self.mpcbml_total = mpcbml_loss.item()
 
         # -----------------------------------------------------
         # 7. FINAL LOSS
         # -----------------------------------------------------
-        return mpcbml_loss + self.lambda_mvc * mvc_loss
+        total_loss = mpcbml_loss + self.lambda_mvc * mvc_loss
+        
+        self.current_total_loss = total_loss.item()
+        self.current_mvc_contribution = (self.lambda_mvc * mvc_loss).item()
+        
+        return total_loss
