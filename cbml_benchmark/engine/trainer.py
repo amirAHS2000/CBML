@@ -74,7 +74,13 @@ def do_train(
     stats_log_path = os.path.join('outputs', 'statistics_log.csv')
     os.makedirs('outputs', exist_ok=True)
 
+    # flag to track if header has been written
+    header_written = os.path.exists(stats_log_path)
+
     for iteration, (images, targets) in enumerate(train_loader, start_iter):
+        # ====================================================================
+        # VALIDATION
+        # ====================================================================
         # Perform validation periodically or at the end of training.
         if iteration % cfg.VALIDATION.VERBOSE == 0 or iteration == max_iter:
             model.eval()  # Set model to evaluation mode.
@@ -94,56 +100,140 @@ def do_train(
             recall_curr.append(ret_metric.recall_k(8))
 
             # Log current recall metrics.
-            print(recall_curr)
+            logger.info(f'Val Recalls: {recall_curr}')
 
-            # MP-CBML statistics (not for other loss functions)
+            # ================================================================
+            # MP-CBML ENHANCED STATISTICS LOGGING
+            # ================================================================
             if cfg.LOSSES.NAME == 'multi_prototype_cbml':
-                # show the value of theta (related to 1/sigma_sq) during training
-                # logger.info(f"The value of theta is: {criterion.show_theta()}")
-                # logger.info(f'Prototype stats: {criterion.show_prototype_stats()}')
-                # logger.info(f'Weight stats: {criterion.show_weight_stats()}')
-
-                # extract numerical values
-                # theta_val = criterion.show_theta()
-                theta_val = 0.0
+                
+                # extract prototype and weight statistics
                 proto_stats = criterion.show_prototype_stats()
                 weight_stats = criterion.show_weight_stats()
 
-                mvc_val = criterion.show_mvc_value() or 0.0
+                # core loss components
+                total_loss = getattr(criterion, 'current_total_loss', 0.0) or 0.0
+                mpcbml_loss = getattr(criterion, 'mpcbml_total', 0.0) or 0.0
+                sim_term = getattr(criterion, 'sim_mpcbml_total', 0.0) or 0.0
+                bias_term = getattr(criterion, 'bias_mpcbml_total', 0.0) or 0.0
+
+                # bias breakdown
+                prior_bias = getattr(criterion, 'prior_bias_total', 0.0) or 0.0
+                weight_bias = getattr(criterion, 'weight_bias_total', 0.0) or 0.0
+
+                # MVC components
+                mvc_loss = getattr(criterion, 'current_mvc_value', 0.0) or 0.0
+                mvc_contrib = getattr(criterion, 'current_mvc_contribution', 0.0) or 0.0
                 pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
                 neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
                 xi_val = getattr(criterion, 'current_xi', 0.0) or 0.0
-                loss_main_term = getattr(criterion, 'mpcbml_total', 0.0) or 0.0
 
-                # write header if file doesn't exist yet
-                if not os.path.exists(stats_log_path):
+                # selected similarities
+                pos_sim = getattr(criterion, 'current_pos_sim', 0.0) or 0.0
+                neg_sim = getattr(criterion, 'current_neg_sim', 0.0) or 0.0
+                sim_margin = getattr(criterion, 'current_sim_margin', 0.0) or 0.0
+
+                # weight entropy
+                weight_entropy_stats = criterion.show_weight_entropy()
+                mean_entropy = weight_entropy_stats['mean_entropy']
+
+                # log-weight statistics (only if using learnable weights)
+                log_weight_stats = criterion.show_log_weight_stats()
+                if log_weight_stats:
+                    log_w_mean = log_weight_stats['mean'] 
+                    log_w_std = log_weight_stats['std']
+                    log_w_range = log_weight_stats['range']
+                else:
+                    log_w_mean = 0.0
+                    log_w_std = 0.0
+                    log_w_range = 0.0
+
+                # write header if this is the first time
+                if not header_written:
                     with open(stats_log_path, mode='w', newline='') as f:
                         writer = csv.writer(f)
                         writer.writerow([
-                            'iteration', 'theta',
+                            # Iteration & loss components
+                            'iteration', 'total_loss', 'mpcbml_loss', 'sim_term', 'bias_term',
+                            'prior_bias', 'weight_bias',
+                            # MVC components
+                            'mvc_loss', 'mvc_contribution', 'pos_mean', 'neg_mean', 'xi',
+                            # Selected similarities
+                            'pos_sim', 'neg_sim', 'sim_margin',
+                            # Prototype statistics
                             'mean_intra_dist', 'mean_inter_dist', 'mean_displacement',
+                            # Weight statistics
                             'mean_entropy', 'mean_max_weight',
-                            'mvc_value', 'pos_mean', 'neg_mean', 'xi', 'main_term'
+                            'log_w_mean', 'log_w_std', 'log_w_range'
                         ])
+                        header_written = True
 
+                # append data
                 with open(stats_log_path, mode='a', newline='') as f:
                     writer = csv.writer(f)
                     writer.writerow([
-                        round(iteration, 5),
-                        round(theta_val, 5),
-                        round(proto_stats['mean_intra_dist'], 5),
-                        round(proto_stats['mean_inter_dist'], 5),
-                        round(proto_stats['mean_displacement'], 5),
-                        round(weight_stats['mean_entropy'], 5),
-                        round(weight_stats['mean_max_weight'], 5),
-                        round(mvc_val, 8),
+                        # Iteration & loss components
+                        iteration,
+                        round(total_loss, 8),
+                        round(mpcbml_loss, 8),
+                        round(sim_term, 8),
+                        round(bias_term, 8),
+                        round(prior_bias, 8),
+                        round(weight_bias, 8),
+                        # MVC components
+                        round(mvc_loss, 8),
+                        round(mvc_contrib, 8),
                         round(pos_mean, 8),
                         round(neg_mean, 8),
                         round(xi_val, 8),
-                        round(loss_main_term, 8)
+                        # Selected similarities
+                        round(pos_sim, 8),
+                        round(neg_sim, 8),
+                        round(sim_margin, 8),
+                        # Prototype statistics
+                        round(proto_stats['mean_intra_dist'], 5),
+                        round(proto_stats['mean_inter_dist'], 5),
+                        round(proto_stats['mean_displacement'], 5),
+                        # Weight statistics
+                        round(mean_entropy, 5),
+                        round(weight_stats['mean_max_weight'], 5),
+                        round(log_w_mean, 5),
+                        round(log_w_std, 5),
+                        round(log_w_range, 5)
                     ])
 
-            if cfg.LOSSES.NAME == 'cbml_loss':
+                # Print detailed breakdown every validation
+                # logger.info("="*70)
+                # logger.info("MP-CBML LOSS BREAKDOWN")
+                # logger.info("="*70)
+                # logger.info(f"Total Loss:            {total_loss:>12.6f}")
+                # logger.info(f"  └─ MP-CBML Loss:     {mpcbml_loss:>12.6f}")
+                # logger.info(f"      ├─ Similarity:   {sim_term:>12.6f}  (should be negative)")
+                # logger.info(f"      └─ Bias:         {bias_term:>12.6f}")
+                # logger.info(f"          ├─ Prior:    {prior_bias:>12.6f}  [log(p+/p-)]")
+                # logger.info(f"          └─ Weight:   {weight_bias:>12.6f}  [log(w+/w-)]")
+                # logger.info(f"  └─ MVC Loss (×{criterion.lambda_mvc}):  {mvc_loss:>12.6f}")
+                # logger.info(f"      └─ Contribution: {mvc_contrib:>12.6f}")
+                # logger.info("-"*70)
+                # logger.info(f"Selected Similarities:")
+                # logger.info(f"  s+ (positive):       {pos_sim:>12.6f}")
+                # logger.info(f"  s- (negative):       {neg_sim:>12.6f}")
+                # logger.info(f"  Margin (s+ - s-):    {sim_margin:>12.6f}  (should increase)")
+                # logger.info("-"*70)
+                # logger.info(f"MVC Components:")
+                # logger.info(f"  μ+ (pos mean):       {pos_mean:>12.6f}")
+                # logger.info(f"  μ- (neg mean):       {neg_mean:>12.6f}")
+                # logger.info(f"  ξ (decision center): {xi_val:>12.6f}")
+                # logger.info("-"*70)
+                # logger.info(f"Weight Stats:")
+                # logger.info(f"  Mean entropy:        {mean_entropy:>12.6f}")
+                # logger.info(f"  Mean max weight:     {weight_stats['mean_max_weight']:>12.6f}")
+                # if log_weight_stats:
+                #     logger.info(f"  Log-weight mean:     {log_w_mean:>12.6f}")
+                #     logger.info(f"  Log-weight std:      {log_w_std:>12.6f}")
+                # logger.info("="*70)
+
+            elif cfg.LOSSES.NAME == 'cbml_loss':
                 mvc_val = getattr(criterion, 'current_mvc_value', 0.0) or 0.0
                 pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
                 neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
@@ -194,10 +284,18 @@ def do_train(
             train_recalls_over_iters.append(recall_curr_train_eval)
             val_recalls_over_iters.append(recall_curr)
 
+        # ====================================================================
+        # EM UPDATE (if applicable)
+        # ====================================================================
         # TODO: iteration period can be changed
         if hasattr(criterion, "em_update_weights") and iteration % 20 == 0:
-            criterion.em_update_weights(model, eval_train_loader)
+            # Only run EM if not using learnable weights
+            if not getattr(criterion, 'use_learnable_weights', False):
+                criterion.em_update_weights(model, eval_train_loader)
 
+        # ====================================================================
+        # TRAINING STEP
+        # ====================================================================
         # Switch back to training mode.
         model.train()
         model.apply(set_bn_eval)  # Freeze BatchNorm layers during training.
@@ -271,7 +369,9 @@ def do_train(
         if iteration % checkpoint_period == 0:
             checkpointer.save("model_{:06d}".format(iteration))
 
-    # Plot and save
+    # ====================================================================
+    # POST-TRAINING: PLOTTING
+    # ====================================================================
     for i, k in enumerate([1, 2, 4, 8]):
         plt.figure()
         plt.plot(iters, [r[i] for r in train_recalls_over_iters], label=f'Train R@{k}')
@@ -296,11 +396,10 @@ def do_train(
     logger.info(f"Best iteration: {best_iteration :06d} | best recall {best_recall} ")
 
     # visualization after training
-    plots_dir = 'outputs/plots'
-    os.makedirs(plots_dir, exist_ok=True)
-
+    # plots_dir = 'outputs/plots'
+    # os.makedirs(plots_dir, exist_ok=True)
     # plot scalar trends from logged CSV
-    plot_scalar_trends(log_path='outputs/statistics_log.csv', save_dir=plots_dir)
+    # plot_scalar_trends(log_path='outputs/statistics_log.csv', save_dir=plots_dir)
 
 def do_test(
         model,        # Neural network model to evaluate.
