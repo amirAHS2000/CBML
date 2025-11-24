@@ -28,6 +28,7 @@ LOSSES:
     HYPER_WEIGHT: 0.2
     REG_WEIGHT: 20.0
     N_NEGATIVES: 5
+    LEARNABLE_WEIGHTS: True
     
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt
