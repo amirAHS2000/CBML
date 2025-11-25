@@ -263,11 +263,11 @@ class MultiPrototypeCBMLLoss(nn.Module):
         pos_weighted = weighted_sims[y_onehot].view(B, K)      # [B,K]
         pos_raw = sims[y_onehot].view(B, K)                    # [B,K]
         pos_w = W[targets]                                     # [B,K]
-        prior_pos = self.class_priors[targets]                 # [B]
+        # prior_pos = self.class_priors[targets]                 # [B]
 
         best_pos_idx = pos_weighted.argmax(dim=-1)             # [B]
         pos_sim = pos_raw[torch.arange(B), best_pos_idx]       # [B]
-        w_pos = pos_w[torch.arange(B), best_pos_idx]           # [B]
+        # w_pos = pos_w[torch.arange(B), best_pos_idx]           # [B]
 
         # -----------------------------------------------------
         # 4. NEGATIVE SELECTION (corrected masking)
@@ -281,8 +281,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
         neg_W = W_expanded[neg_mask].view(B, C-1, K)            # [B,C-1,K]
 
         # Negative priors (correct batching)
-        class_priors_exp = self.class_priors.unsqueeze(0).expand(B, C)  # [B,C]
-        neg_priors = class_priors_exp[neg_mask].view(B, C-1)            # [B,C-1]
+        # class_priors_exp = self.class_priors.unsqueeze(0).expand(B, C)  # [B,C]
+        # neg_priors = class_priors_exp[neg_mask].view(B, C-1)            # [B,C-1]
 
         # Best prototype each negative class
         neg_weighted_max, neg_best_k = neg_weighted.max(dim=-1)  # [B,C-1]
@@ -293,8 +293,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         # Extract selected negative prototype info
         best_neg_sim = neg_raw[b_idx, best_neg_class, neg_best_k[b_idx, best_neg_class]]    # [B]
-        w_neg = neg_W[b_idx, best_neg_class, neg_best_k[b_idx, best_neg_class]]             # [B]
-        prior_neg = neg_priors[b_idx, best_neg_class]                                       # [B]
+        # w_neg = neg_W[b_idx, best_neg_class, neg_best_k[b_idx, best_neg_class]]             # [B]
+        # prior_neg = neg_priors[b_idx, best_neg_class]                                       # [B]
 
         # Log selected similarities
         self.current_pos_sim = pos_sim.mean().item()
@@ -308,23 +308,26 @@ class MultiPrototypeCBMLLoss(nn.Module):
         sim_term = beta * (pos_sim - best_neg_sim)  # [B]
         
         # Bias components
-        log_prior_pos = torch.log(prior_pos + eps)
-        log_prior_neg = torch.log(prior_neg + eps)
-        log_w_pos = torch.log(w_pos + eps)
-        log_w_neg = torch.log(w_neg + eps)
+        # log_prior_pos = torch.log(prior_pos + eps)
+        # log_prior_neg = torch.log(prior_neg + eps)
+        # log_w_pos = torch.log(w_pos + eps)
+        # log_w_neg = torch.log(w_neg + eps)
         
-        prior_bias = log_prior_pos - log_prior_neg  # [B]
-        weight_bias = log_w_pos - log_w_neg         # [B]
-        bias_term = prior_bias + weight_bias        # [B]
+        # prior_bias = log_prior_pos - log_prior_neg  # [B]
+        # weight_bias = log_w_pos - log_w_neg         # [B]
+        # bias_term = prior_bias + weight_bias        # [B]
+        
+        # Set the bias term to zero (it caused instability in loss)
+        bias_term = 0.0
         
         # Total MP-CBML loss
         mpcbml_loss = -(sim_term + bias_term).mean()
 
         # Log ALL components individually
         self.sim_mpcbml_total = (-sim_term).mean().item()      # Negative similarity term
-        self.bias_mpcbml_total = (-bias_term).mean().item()    # Negative bias term
-        self.prior_bias_total = prior_bias.mean().item()       # Prior contribution
-        self.weight_bias_total = weight_bias.mean().item()     # Weight contribution
+        # self.bias_mpcbml_total = (-bias_term).mean().item()    # Negative bias term
+        # self.prior_bias_total = prior_bias.mean().item()       # Prior contribution
+        # self.weight_bias_total = weight_bias.mean().item()     # Weight contribution
         self.mpcbml_total = mpcbml_loss.item()                 # Total contrastive loss
 
         # -----------------------------------------------------
