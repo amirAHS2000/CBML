@@ -47,10 +47,10 @@ class MultiPrototypeCBMLLoss(nn.Module):
             )
 
         # Class priors [C]
-        self.class_priors = nn.Parameter(
-            torch.tensor(cfg.LOSSES.MULTI_PROTOTYPE_CBML.CLASS_PRIORS, device=self.device),
-            requires_grad=False
-        )
+        # self.class_priors = nn.Parameter(
+        #     torch.tensor(cfg.LOSSES.MULTI_PROTOTYPE_CBML.CLASS_PRIORS, device=self.device),
+        #     requires_grad=False
+        # )
 
         # ==========================================
         # ENHANCED LOGGING VARIABLES
@@ -233,7 +233,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         B = embeddings.size(0)
         C, K, D = self.num_classes, self.prototype_per_class, self.embed_dim
-        eps = 1e-9
+        # eps = 1e-9
 
         # -----------------------------------------------------
         # 0. Normalize
@@ -262,7 +262,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # -----------------------------------------------------
         pos_weighted = weighted_sims[y_onehot].view(B, K)      # [B,K]
         pos_raw = sims[y_onehot].view(B, K)                    # [B,K]
-        pos_w = W[targets]                                     # [B,K]
+        # pos_w = W[targets]                                     # [B,K]
         # prior_pos = self.class_priors[targets]                 # [B]
 
         best_pos_idx = pos_weighted.argmax(dim=-1)             # [B]
@@ -273,12 +273,12 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # 4. NEGATIVE SELECTION (corrected masking)
         # -----------------------------------------------------
         # Expand weights to [B,C,K]
-        W_expanded = W.unsqueeze(0).expand(B, C, K)  # [B,C,K]
+        # W_expanded = W.unsqueeze(0).expand(B, C, K)  # [B,C,K]
 
         # Extract negative prototype info
         neg_weighted = weighted_sims[neg_mask].view(B, C-1, K)  # [B,C-1,K]
         neg_raw = sims[neg_mask].view(B, C-1, K)                # [B,C-1,K]
-        neg_W = W_expanded[neg_mask].view(B, C-1, K)            # [B,C-1,K]
+        # neg_W = W_expanded[neg_mask].view(B, C-1, K)            # [B,C-1,K]
 
         # Negative priors (correct batching)
         # class_priors_exp = self.class_priors.unsqueeze(0).expand(B, C)  # [B,C]
@@ -313,9 +313,10 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # log_w_pos = torch.log(w_pos + eps)
         # log_w_neg = torch.log(w_neg + eps)
         
-        # prior_bias = log_prior_pos - log_prior_neg  # [B]
+        # prior_bias = log_prior_pos - log_prior_neg    # [B]
         # weight_bias = log_w_pos - log_w_neg         # [B]
         # bias_term = prior_bias + weight_bias        # [B]
+        # bias_term = prior_bias
         
         # Set the bias term to zero (it caused instability in loss)
         bias_term = 0.0
@@ -333,29 +334,30 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # -----------------------------------------------------
         # 6. MVC (global negative)
         # -----------------------------------------------------
-        neg_sims_flat = neg_raw.reshape(B, (C-1)*K)               # [B,(C-1)K]
-        neg_weights_flat = neg_W.reshape(B, (C-1)*K)              # [B,(C-1)K]
-        neg_weights_flat = neg_weights_flat / (neg_weights_flat.sum(dim=-1, keepdim=True)+eps)
+        # neg_sims_flat = neg_raw.reshape(B, (C-1)*K)               # [B,(C-1)K]
+        # neg_weights_flat = neg_W.reshape(B, (C-1)*K)              # [B,(C-1)K]
+        # neg_weights_flat = neg_weights_flat / (neg_weights_flat.sum(dim=-1, keepdim=True)+eps)
 
-        mu_pos = (pos_raw * pos_w).sum(dim=-1)                   # [B]
-        mu_neg = (neg_sims_flat * neg_weights_flat).sum(dim=-1)  # [B]
-        xi = self.gamma * mu_pos + (1-self.gamma) * mu_neg       # [B]
+        # mu_pos = (pos_raw * pos_w).sum(dim=-1)                   # [B]
+        # mu_neg = (neg_sims_flat * neg_weights_flat).sum(dim=-1)  # [B]
+        # xi = self.gamma * mu_pos + (1-self.gamma) * mu_neg       # [B]
 
-        mvc = ((neg_sims_flat - xi[:,None])**2 * neg_weights_flat).sum(dim=-1)
-        mvc_loss = mvc.mean()
+        # mvc = ((neg_sims_flat - xi[:,None])**2 * neg_weights_flat).sum(dim=-1)
+        # mvc_loss = mvc.mean()
 
         # Log MVC components
-        self.current_mvc_value = mvc_loss.item()
-        self.current_positive_mean = mu_pos.mean().item()
-        self.current_negative_mean = mu_neg.mean().item()
-        self.current_xi = xi.mean().item()
+        # self.current_mvc_value = mvc_loss.item()
+        # self.current_positive_mean = mu_pos.mean().item()
+        # self.current_negative_mean = mu_neg.mean().item()
+        # self.current_xi = xi.mean().item()
 
         # -----------------------------------------------------
         # 7. FINAL LOSS
         # -----------------------------------------------------
-        total_loss = mpcbml_loss + self.lambda_mvc * mvc_loss
+        # total_loss = mpcbml_loss + self.lambda_mvc * mvc_loss
         
-        self.current_total_loss = total_loss.item()
-        self.current_mvc_contribution = (self.lambda_mvc * mvc_loss).item()
+        # self.current_total_loss = total_loss.item()
+        self.current_total_loss = mpcbml_loss.item()
+        # self.current_mvc_contribution = (self.lambda_mvc * mvc_loss).item()
         
-        return total_loss
+        return mpcbml_loss
