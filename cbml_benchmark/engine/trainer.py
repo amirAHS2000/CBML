@@ -234,30 +234,44 @@ def do_train(
                 # logger.info("="*70)
 
             elif cfg.LOSSES.NAME == 'cbml_loss':
+                # Get all logged values
                 mvc_val = getattr(criterion, 'current_mvc_value', 0.0) or 0.0
                 pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
                 neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
                 xi_val = getattr(criterion, 'current_xi', 0.0) or 0.0
-                loss_main_term = getattr(criterion, 'cbml_total', 0.0) or 0.0
+                
+                # Loss components (NEW)
+                cbml_total = getattr(criterion, 'cbml_total', 0.0) or 0.0
+                pos_loss = getattr(criterion, 'pos_loss_total', 0.0) or 0.0
+                neg_loss = getattr(criterion, 'neg_loss_total', 0.0) or 0.0
+                mvc_contrib = getattr(criterion, 'mvc_contribution', 0.0) or 0.0
 
-                # write header if file doesn't exist yet
+                # Write header if file doesn't exist yet
                 if not os.path.exists(stats_log_path):
                     with open(stats_log_path, mode='w', newline='') as f:
                         writer = csv.writer(f)
                         writer.writerow([
                             'iteration',
-                            'mvc_value', 'pos_mean', 'neg_mean', 'xi', 'main_term'
+                            # Statistics
+                            'mvc_value', 'pos_mean', 'neg_mean', 'xi',
+                            # Loss components
+                            'cbml_total', 'pos_loss', 'neg_loss', 'mvc_contrib'
                         ])
 
                 with open(stats_log_path, mode='a', newline='') as f:
                     writer = csv.writer(f)
                     writer.writerow([
                         round(iteration, 5),
+                        # Statistics
                         round(mvc_val, 8),
                         round(pos_mean, 8),
                         round(neg_mean, 8),
                         round(xi_val, 8),
-                        round(loss_main_term, 8)
+                        # Loss components
+                        round(cbml_total, 8),
+                        round(pos_loss, 8),
+                        round(neg_loss, 8),
+                        round(mvc_contrib, 8)
                     ])
 
             # Update best model if recall@1 improves.
