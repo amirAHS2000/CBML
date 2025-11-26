@@ -1,6 +1,6 @@
 MODEL:
   BACKBONE:
-    NAME: resnet50
+    NAME: resnet18
   PRETRAIN: imagenet
 
 SAVE_DIR: output-resnet50-cub-cbml
