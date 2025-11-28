@@ -11,13 +11,6 @@ from cbml_benchmark.data.evaluations import RetMetric
 from cbml_benchmark.utils.feat_extractor import feat_extractor
 from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
-from cbml_benchmark.utils.visualization_utils import (
-    plot_scalar_trends,
-    plot_prototype_displacement,
-    plot_entropy_histogram,
-    plot_prototype_similarity,
-    plot_tsne
-)
 
 
 def update_ema_variables(model, ema_model):
@@ -107,6 +100,11 @@ def do_train(
             # ================================================================
             if cfg.LOSSES.NAME == 'multi_prototype_cbml':
                 
+                weight_sums = criterion.weights.sum(dim=1)
+                logger.info(f'Weight sum check - min: {weight_sums.min():.6f}, '
+                            f'max: {weight_sums.max():.6f}, '
+                            f'mean: {weight_sums.mean():.6f}')
+
                 # extract prototype and weight statistics
                 proto_stats = criterion.show_prototype_stats()
                 weight_stats = criterion.show_weight_stats()
@@ -202,37 +200,6 @@ def do_train(
                         round(log_w_range, 5)
                     ])
 
-                # Print detailed breakdown every validation
-                # logger.info("="*70)
-                # logger.info("MP-CBML LOSS BREAKDOWN")
-                # logger.info("="*70)
-                # logger.info(f"Total Loss:            {total_loss:>12.6f}")
-                # logger.info(f"  └─ MP-CBML Loss:     {mpcbml_loss:>12.6f}")
-                # logger.info(f"      ├─ Similarity:   {sim_term:>12.6f}  (should be negative)")
-                # logger.info(f"      └─ Bias:         {bias_term:>12.6f}")
-                # logger.info(f"          ├─ Prior:    {prior_bias:>12.6f}  [log(p+/p-)]")
-                # logger.info(f"          └─ Weight:   {weight_bias:>12.6f}  [log(w+/w-)]")
-                # logger.info(f"  └─ MVC Loss (×{criterion.lambda_mvc}):  {mvc_loss:>12.6f}")
-                # logger.info(f"      └─ Contribution: {mvc_contrib:>12.6f}")
-                # logger.info("-"*70)
-                # logger.info(f"Selected Similarities:")
-                # logger.info(f"  s+ (positive):       {pos_sim:>12.6f}")
-                # logger.info(f"  s- (negative):       {neg_sim:>12.6f}")
-                # logger.info(f"  Margin (s+ - s-):    {sim_margin:>12.6f}  (should increase)")
-                # logger.info("-"*70)
-                # logger.info(f"MVC Components:")
-                # logger.info(f"  μ+ (pos mean):       {pos_mean:>12.6f}")
-                # logger.info(f"  μ- (neg mean):       {neg_mean:>12.6f}")
-                # logger.info(f"  ξ (decision center): {xi_val:>12.6f}")
-                # logger.info("-"*70)
-                # logger.info(f"Weight Stats:")
-                # logger.info(f"  Mean entropy:        {mean_entropy:>12.6f}")
-                # logger.info(f"  Mean max weight:     {weight_stats['mean_max_weight']:>12.6f}")
-                # if log_weight_stats:
-                #     logger.info(f"  Log-weight mean:     {log_w_mean:>12.6f}")
-                #     logger.info(f"  Log-weight std:      {log_w_std:>12.6f}")
-                # logger.info("="*70)
-
             elif cfg.LOSSES.NAME == 'cbml_loss':
                 # Get all logged values
                 mvc_val = getattr(criterion, 'current_mvc_value', 0.0) or 0.0
@@ -299,15 +266,6 @@ def do_train(
             val_recalls_over_iters.append(recall_curr)
 
         # ====================================================================
-        # EM UPDATE (if applicable)
-        # ====================================================================
-        # TODO: iteration period can be changed
-        if hasattr(criterion, "em_update_weights") and iteration % 20 == 0:
-            # Only run EM if not using learnable weights
-            if not getattr(criterion, 'use_learnable_weights', False):
-                criterion.em_update_weights(model, eval_train_loader)
-
-        # ====================================================================
         # TRAINING STEP
         # ====================================================================
         # Switch back to training mode.
@@ -346,9 +304,14 @@ def do_train(
             loss = criterion(feats, targets)
 
         # Backward pass and optimization.
-        optimizer.zero_grad()  # Clear previous gradients.
-        loss.backward()        # Compute gradients.
-        optimizer.step()       # Update model parameters.
+        optimizer.zero_grad()   # Clear previous gradients.
+        loss.backward()         # Compute gradients.
+
+        # CRITICAL: Perform constrained weight update BEFORE optimizer.step()
+        if cfg.LOSSES.NAME == 'multi_prototype_cbml':
+            criterion.constrained_weight_update()
+
+        optimizer.step()        # Update model parameters.
 
         # Measure batch processing time.
         batch_time = time.time() - end
