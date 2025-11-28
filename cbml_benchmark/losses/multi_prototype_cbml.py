@@ -20,7 +20,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.lambda_mvc = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'REG_WEIGHT', 20.0)
 
         # Learnable theta (log beta) - Eq. 6
-        init_theta = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'INIT_THETA', 1.0)
+        init_theta = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'INIT_THETA', 1.5)
         self.theta = nn.Parameter(torch.tensor(init_theta, device=self.device))
 
         # Prototypes [C, K, D] - Eq. 2
