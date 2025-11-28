@@ -99,54 +99,52 @@ def do_train(
             # MP-CBML ENHANCED STATISTICS LOGGING
             # ================================================================
             if cfg.LOSSES.NAME == 'multi_prototype_cbml':
-                
+                # Weight sum verification (should all be ~1.0)
                 weight_sums = criterion.weights.sum(dim=1)
                 logger.info(f'Weight sum check - min: {weight_sums.min():.6f}, '
                             f'max: {weight_sums.max():.6f}, '
                             f'mean: {weight_sums.mean():.6f}')
-
-                # extract prototype and weight statistics
+                
+                # Extract prototype and weight statistics
                 proto_stats = criterion.show_prototype_stats()
                 weight_stats = criterion.show_weight_stats()
-
-                # core loss components
+                
+                # Core loss components
                 total_loss = getattr(criterion, 'current_total_loss', 0.0) or 0.0
                 mpcbml_loss = getattr(criterion, 'mpcbml_total', 0.0) or 0.0
                 sim_term = getattr(criterion, 'sim_mpcbml_total', 0.0) or 0.0
                 bias_term = getattr(criterion, 'bias_mpcbml_total', 0.0) or 0.0
-
-                # bias breakdown
+                
+                # Bias breakdown
                 prior_bias = getattr(criterion, 'prior_bias_total', 0.0) or 0.0
                 weight_bias = getattr(criterion, 'weight_bias_total', 0.0) or 0.0
-
+                
                 # MVC components
                 mvc_loss = getattr(criterion, 'current_mvc_value', 0.0) or 0.0
                 mvc_contrib = getattr(criterion, 'current_mvc_contribution', 0.0) or 0.0
                 pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
                 neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
                 xi_val = getattr(criterion, 'current_xi', 0.0) or 0.0
-
-                # selected similarities
+                
+                # Selected similarities
                 pos_sim = getattr(criterion, 'current_pos_sim', 0.0) or 0.0
                 neg_sim = getattr(criterion, 'current_neg_sim', 0.0) or 0.0
                 sim_margin = getattr(criterion, 'current_sim_margin', 0.0) or 0.0
-
-                # weight entropy
+                
+                # Beta parameter (NEW - replaces log_weight stats)
+                current_beta = getattr(criterion, 'current_beta', 1.0)
+                theta_value = criterion.theta.item()  # log(beta)
+                
+                # Weight entropy
                 weight_entropy_stats = criterion.show_weight_entropy()
                 mean_entropy = weight_entropy_stats['mean_entropy']
-
-                # log-weight statistics (only if using learnable weights)
-                log_weight_stats = criterion.show_log_weight_stats()
-                if log_weight_stats:
-                    log_w_mean = log_weight_stats['mean'] 
-                    log_w_std = log_weight_stats['std']
-                    log_w_range = log_weight_stats['range']
-                else:
-                    log_w_mean = 0.0
-                    log_w_std = 0.0
-                    log_w_range = 0.0
-
-                # write header if this is the first time
+                
+                # Weight sum statistics (NEW - to monitor constraint preservation)
+                weight_sum_min = weight_sums.min().item()
+                weight_sum_max = weight_sums.max().item()
+                weight_sum_std = weight_sums.std().item()
+                
+                # Write header if this is the first time
                 if not header_written:
                     with open(stats_log_path, mode='w', newline='') as f:
                         writer = csv.writer(f)
@@ -162,11 +160,14 @@ def do_train(
                             'mean_intra_dist', 'mean_inter_dist', 'mean_displacement',
                             # Weight statistics
                             'mean_entropy', 'mean_max_weight',
-                            'log_w_mean', 'log_w_std', 'log_w_range'
+                            # Beta parameter (temperature)
+                            'beta', 'theta',
+                            # Weight sum verification (constraint check)
+                            'weight_sum_min', 'weight_sum_max', 'weight_sum_std'
                         ])
                         header_written = True
-
-                # append data
+                
+                # Append data
                 with open(stats_log_path, mode='a', newline='') as f:
                     writer = csv.writer(f)
                     writer.writerow([
@@ -195,9 +196,13 @@ def do_train(
                         # Weight statistics
                         round(mean_entropy, 5),
                         round(weight_stats['mean_max_weight'], 5),
-                        round(log_w_mean, 5),
-                        round(log_w_std, 5),
-                        round(log_w_range, 5)
+                        # Beta parameter
+                        round(current_beta, 5),
+                        round(theta_value, 5),
+                        # Weight sum verification
+                        round(weight_sum_min, 6),
+                        round(weight_sum_max, 6),
+                        round(weight_sum_std, 6)
                     ])
 
             elif cfg.LOSSES.NAME == 'cbml_loss':
