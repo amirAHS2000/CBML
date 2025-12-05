@@ -8,6 +8,28 @@ import torch.nn.functional as F
 from sklearn.manifold import TSNE
 
 
+def plot_distribution_figure(pos_sims, neg_sims, title, save_path):
+    """
+    Plots the histogram overlap
+    """
+    plt.figure(figsize=(8, 6))
+
+    # plot negative distribution (blue)
+    plt.hist(neg_sims, bins=80, range=(-1, 1), alpha=0.6, color='blue', label='Negative', density=True)
+
+    # plot positive distribution (red)
+    plt.hist(pos_sims, bins=80, range=(-1, 1), alpha=0.6, color='red', label='Positive', density=True)
+
+    plt.title(title)
+    plt.xlabel('Cosine Similarity')
+    plt.ylabel('Density')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
 def plot_scalar_trends(log_path, save_dir=None):
     """
     Plot trends of scalar statistics (theta, distances, entropy, etc.)
