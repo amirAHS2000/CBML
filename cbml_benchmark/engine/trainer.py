@@ -8,9 +8,10 @@ import torch
 import matplotlib.pyplot as plt
 
 from cbml_benchmark.data.evaluations import RetMetric
-from cbml_benchmark.utils.feat_extractor import feat_extractor
+from cbml_benchmark.utils.feat_extractor import feat_extractor, compute_similarity_stats
 from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
+from cbml_benchmark.utils.visualization_utils import plot_distribution_figure
 
 
 def update_ema_variables(model, ema_model):
@@ -99,6 +100,28 @@ def do_train(
             # MP-CBML ENHANCED STATISTICS LOGGING
             # ================================================================
             if cfg.LOSSES.NAME == 'multi_prototype_cbml':
+                plot_dir = os.path.join('outputs', 'dist_plots')
+                os.makedirs(plot_dir, exist_ok=True)
+
+                logger.info('Computing Similarity Distributions...')
+
+                # validation set distribution (generalization check)
+                val_pos, val_neg = compute_similarity_stats(model, criterion, val_loader, device)
+                plot_distribution_figure(
+                    val_pos, val_neg,
+                    title=f'Val Distribution (Iter {iteration})',
+                    save_path=os.path.join(plot_dir, f'val_dist_{iteration:06d}.png')
+                )
+
+                # training set distribution (overfitting check)
+                # use eval_train_loader (no augmentation) to get clean stats
+                train_pos, train_neg = compute_similarity_stats(model, criterion, eval_train_loader, device)
+                plot_distribution_figure(
+                    train_pos, train_neg,
+                    title=f'Train Distribution (Iter {iteration})',
+                    save_path=os.path.join(plot_dir, f'train_dist_{iteration:06d}.png')
+                )
+
                 # Weight sum verification (should all be ~1.0)
                 weight_sums = criterion.weights.sum(dim=1)
                 logger.info(f'Weight sum check - min: {weight_sums.min():.6f}, '

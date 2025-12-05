@@ -289,41 +289,38 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # 7. MVC REGULARIZER (Eq. 26-31)
         # -----------------------------------------------------
         
-        # Positive mean similarity (Eq. 26)
-        # μ⁺ᵢ = Σₗ w^c⁺_ℓ · s^(c⁺,ℓ)_i
-        mu_pos = (pos_w * pos_raw).sum(dim=-1)  # [B]
+        # A. Positive Mean: Use Dominant Positive (Hardest/Best match)
+        # Instead of weighted sum of all k prototypes, use the one that matters (pos_sim)
+        # This aligns with the "Dominant" logic of the Bayesian term.
+        mu_pos = pos_sim  # [B] (Already computed in Step 3)
         
-        # Global negative mean similarity (Eq. 27-28)
-        # First, compute total negative weight (denominator in Eq. 27)
-        # Since Σ_ℓ w^c_ℓ = 1 for each class, total = C-1
-        total_neg_weight = (C - 1)
+        # B. Negative Mean: Use Dominant Negative (Hardest)
+        # Instead of weighted sum of all negatives (which dilutes the value),
+        # use the Best Negative Similarity.
+        mu_neg = best_neg_sim # [B] (Already computed in Step 4)
         
-        # Renormalize negative weights (Eq. 27)
-        # w̃^c_ℓ = w^c_ℓ / Σ_{c'≠c⁺} Σ_{ℓ'} w^{c'}_{ℓ'}
-        neg_weights_renorm = neg_W / total_neg_weight  # [B, C-1, K]
+        # C. Decision Center (Target)
+        # Interpolate between the Hardest Positive and Hardest Negative
+        xi = self.gamma * mu_pos + (1 - self.gamma) * mu_neg # [B]
         
-        # Global negative mean similarity (Eq. 28)
-        # μ⁻ᵢ = Σ_{c≠c⁺} Σ_ℓ w̃^c_ℓ · s^(c,ℓ)_i
-        mu_neg = (neg_weights_renorm * neg_raw).sum(dim=(1, 2))  # [B]
+        # D. MVC Term
+        # We want to constrain the variance of NEGATIVES around this target xi.
+        # CRITICAL CHOICE:
+        # If we pull ALL negatives to xi, we pull easy negatives (0.0) UP to xi (0.7). This is bad.
+        # We should only regularize the HARD negatives to stay close to xi.
         
-        # Decision center (Eq. 29)
-        # ξᵢ = γ·μ⁺ᵢ + (1-γ)·μ⁻ᵢ
-        xi = self.gamma * mu_pos + (1 - self.gamma) * mu_neg  # [B]
+        # Strategy: Apply L2 penalty only to the Dominant Negative.
+        # This acts as a "Margin Stability" constraint. It prevents the hard negative 
+        # from being pushed too far (overfitting) or getting too close.
+        # It forces the hard negative to hover at specific distance relative to the positive.
         
-        # MVC term (Eq. 30)
-        # MVCᵢ = Σ_{c≠c⁺} Σ_ℓ w̃^c_ℓ · (s^(c,ℓ)_i - ξᵢ)²
-        # Expand xi for broadcasting: [B] -> [B, 1, 1]
-        xi_expanded = xi.unsqueeze(-1).unsqueeze(-1)  # [B, 1, 1]
+        mvc_per_sample = (best_neg_sim - xi) ** 2  # [B]
         
-        # Compute squared deviations
-        neg_deviations = (neg_raw - xi_expanded) ** 2  # [B, C-1, K]
+        # Note: If you want to include top-k hard negatives, you could average their deviations,
+        # but starting with the Dominant Negative is the most consistent with your logic.
         
-        # Weight by renormalized weights and sum
-        mvc_per_sample = (neg_weights_renorm * neg_deviations).sum(dim=(1, 2))  # [B]
-        
-        # MVC loss (Eq. 31)
-        mvc_loss = mvc_per_sample.mean()  # scalar
-        
+        mvc_loss = mvc_per_sample.mean()
+
         # Log MVC components
         self.current_mvc_value = mvc_loss.item()
         self.current_positive_mean = mu_pos.mean().item()
