@@ -106,12 +106,12 @@ def do_train(
                 logger.info('Computing Similarity Distributions...')
 
                 # validation set distribution (generalization check)
-                val_pos, val_neg = compute_similarity_stats(model, criterion, val_loader, device)
-                plot_distribution_figure(
-                    val_pos, val_neg,
-                    title=f'Val Distribution (Iter {iteration})',
-                    save_path=os.path.join(plot_dir, f'val_dist_{iteration:06d}.png')
-                )
+                # val_pos, val_neg = compute_similarity_stats(model, criterion, val_loader, device)
+                # plot_distribution_figure(
+                #     val_pos, val_neg,
+                #     title=f'Val Distribution (Iter {iteration})',
+                #     save_path=os.path.join(plot_dir, f'val_dist_{iteration:06d}.png')
+                # )
 
                 # training set distribution (overfitting check)
                 # use eval_train_loader (no augmentation) to get clean stats
