@@ -314,7 +314,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # from being pushed too far (overfitting) or getting too close.
         # It forces the hard negative to hover at specific distance relative to the positive.
         
-        mvc_per_sample = (best_neg_sim - xi) ** 2  # [B]
+        mvc_per_sample = (mu_neg - xi) ** 2  # [B]
         
         # Note: If you want to include top-k hard negatives, you could average their deviations,
         # but starting with the Dominant Negative is the most consistent with your logic.
