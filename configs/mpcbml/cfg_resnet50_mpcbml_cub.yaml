@@ -26,7 +26,7 @@ LOSSES:
     N_CLASSES: 100
     PROTOTYPE_PER_CLASS: 5
     HYPER_WEIGHT: 0.2
-    REG_WEIGHT: 50.0
+    REG_WEIGHT: 10.0
     N_NEGATIVES: 5
     LEARNABLE_WEIGHTS: True
     
@@ -35,7 +35,7 @@ DATA:
   TEST_IMG_SOURCE: resource/datasets/CUB_200_2011/test.txt
   CLASS_COUNT_SOURCE: resource/datasets/CUB_200_2011/class_counts.json
   TRAIN_BATCHSIZE: 120
-  TEST_BATCHSIZE: 128
+  TEST_BATCHSIZE: 120 # change this value from 128 to 120 (for consistency with train_batchsize for plotting distribution)
   NUM_WORKERS: 8
   NUM_INSTANCES: 8
 
