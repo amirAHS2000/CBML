@@ -23,7 +23,11 @@ def feat_extractor(model, data_loader, logger=None):
 def compute_similarity_stats(model, criterion, loader, device):
     """
     Computes the dominant positive and dominant negative similarities 
-    for the entire dataset provided by 'loader'.
+    for the entire dataset using the multi-prototype formulation.
+    
+    This matches your MP-CBML loss computation:
+    - Positive: max similarity to any prototype of the true class
+    - Negative: max similarity to any prototype of any other class
     """
     model.eval()
     all_pos_sims = []
@@ -36,39 +40,30 @@ def compute_similarity_stats(model, criterion, loader, device):
             
             # 1. Get Normalized Embeddings
             embeddings = model(images)
-            z = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+            z = torch.nn.functional.normalize(embeddings, p=2, dim=1)  # [B, D]
             
-            # 2. Get Prototypes from your Criterion (Loss module)
-            # Shape: [Num_Classes, K_Prototypes, Dim]
+            # 2. Get Prototypes [C, K, D]
             protos = criterion.prototypes 
             C, K, D = protos.shape
             B = z.shape[0]
             
-            # 3. Compute Raw Similarities [B, C, K]
-            # Flatten protos to [C*K, D] for matmul
-            flat_protos = protos.view(C*K, D).t()
-            sims = torch.matmul(z, flat_protos).view(B, C, K)
+            # 3. Compute similarities [B, C, K]
+            flat_protos = protos.view(C*K, D).t()  # [D, C*K]
+            sims = torch.matmul(z, flat_protos).view(B, C, K)  # [B, C, K]
             
-            # 4. Extract Dominant Positive (Max sim to target class)
-            # Select the [K] similarities for the correct class for each batch item
-            pos_class_sims = sims[torch.arange(B), targets] # [B, K]
-            best_pos, _ = pos_class_sims.max(dim=1) # [B]
+            # 4. Dominant Positive: max similarity to target class prototypes
+            pos_class_sims = sims[torch.arange(B, device=device), targets]  # [B, K]
+            best_pos, _ = pos_class_sims.max(dim=1)  # [B]
             
-            # 5. Extract Dominant Negative (Max sim to ANY non-target class)
-            # Create a mask for the target class
-            mask = torch.ones_like(sims, dtype=torch.bool)
-            mask[torch.arange(B), targets] = False
+            # 5. Dominant Negative: max similarity to non-target class prototypes
+            # Create mask for negative classes
+            neg_mask = torch.ones(B, C, dtype=torch.bool, device=device)
+            neg_mask[torch.arange(B, device=device), targets] = False  # [B, C]
+            neg_mask = neg_mask.unsqueeze(-1).expand(B, C, K)  # [B, C, K]
             
-            # Mask out the positive class (set to -inf so it's not selected as max)
-            # Note: We reshape to [B, C*K] to find global max negative easily
-            sims_flat = sims.view(B, -1)
-            mask_flat = mask.view(B, -1)
-            
-            # Fill positives with -10.0 (sims are usually -1 to 1)
-            neg_sims_masked = torch.where(mask_flat, sims_flat, torch.tensor(-10.0, device=device))
-            
-            # Get max over all negative prototypes
-            best_neg, _ = neg_sims_masked.max(dim=1) # [B]
+            # Extract negative similarities and find max
+            neg_sims = sims[neg_mask].view(B, (C-1)*K)  # [B, (C-1)*K]
+            best_neg, _ = neg_sims.max(dim=1)  # [B]
             
             all_pos_sims.extend(best_pos.cpu().numpy())
             all_neg_sims.extend(best_neg.cpu().numpy())
