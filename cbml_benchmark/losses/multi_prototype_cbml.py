@@ -18,7 +18,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
 
         self.mu_pos = 0.0
         self.mu_neg = 0.0
-        self.momentum_coef = 0.99
+        self.momentum_coef = 0.998
         self.momentum_coef_power = 0.0
 
         self.gamma = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'HYPER_WEIGHT', 0.2)
