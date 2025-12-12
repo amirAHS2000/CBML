@@ -19,7 +19,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.mu_pos = 0.0
         self.mu_neg = 0.0
         self.momentum_coef = 0.998
-        self.momentum_coef_power = 0.0
+        self.T = 0
 
         self.gamma = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'HYPER_WEIGHT', 0.2)
         self.lambda_mvc = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'REG_WEIGHT', 10.0)
@@ -81,6 +81,10 @@ class MultiPrototypeCBMLLoss(nn.Module):
         
         # Beta tracking
         self.current_beta = 1.0
+
+    def iteration_counter(self, iteration):
+        self.T = iteration
+        print(self.T)
 
     @torch.no_grad()
     def set_prototypes_and_weights(self, prototypes, cluster_sizes):
@@ -293,54 +297,27 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # -----------------------------------------------------
         # 7. MVC REGULARIZER (Corrected EMA Implementation)
         # -----------------------------------------------------
-        
-        # 1. Calculate Batch Statistics (Scalar values)
-        # We detach() because the Target (xi) should be a fixed reference point,
-        # not a variable we backpropagate through.
-        batch_pos_mean = pos_sim.detach().mean()      # Scalar
-        batch_neg_mean = best_neg_sim.detach().mean() # Scalar
+        mvc_batch = []
+        for i in range(B):
+            best_pos_sim_i = pos_sim[i].detach().item()
+            best_neg_sim_i = best_neg_sim[i].detach().item()
 
-        # 2. Update EMA States (Accumulators)
-        # Note: We do NOT divide by the correction factor here. We keep the raw state.
-        # if self.training:
-        
-        # Compute bias correction factor
-        # Protect against division by zero in first iteration
-        self.momentum_coef_power = self.momentum_coef * self.momentum_coef_power + \
-                                (1 - self.momentum_coef)
-        
-        # Update EMA
-        self.mu_pos = self.momentum_coef * self.mu_pos + \
-                    (1 - self.momentum_coef) * batch_pos_mean
-        self.mu_neg = self.momentum_coef * self.mu_neg + \
-                    (1 - self.momentum_coef) * batch_neg_mean
+            self.mu_pos = self.momentum_coef * self.mu_pos + (1 - self.momentum_coef) * best_pos_sim_i
+            self.mu_neg = self.momentum_coef * self.mu_neg + (1 - self.momentum_coef) * best_neg_sim_i
 
-        # 3. Apply Bias Correction (Temporary variables for calculation)
-        # This handles the "cold start" problem where EMA starts at 0.
-        correction_factor = max(1.0 - self.momentum_coef_power, 1e-8)
+            bias_corrected_mu_pos = self.mu_pos / (1.0 - (self.momentum_coef ** self.T))
+            bias_corrected_mu_neg = self.mu_neg / (1.0 - (self.momentum_coef ** self.T))
+            xi = self.gamma * bias_corrected_mu_pos + (1.0 - self.gamma) * bias_corrected_mu_neg
+            mvc_i = (best_neg_sim[i] - xi.detach()) ** 2 # here just gradient flows through the selected best negative similarity
+            mvc_batch.append(mvc_i)
         
-        debiased_pos = self.mu_pos / correction_factor
-        debiased_neg = self.mu_neg / correction_factor
-
-        # 4. Calculate Global Decision Center (xi)
-        # We use the STABLE, DEBIASED global averages
-        xi = self.gamma * debiased_pos + (1 - self.gamma) * debiased_neg
-        
-        # Ensure xi is treated as a constant for the loss calculation
-        xi = xi.detach()
-
-        # 5. MVC Loss Calculation
-        # We penalize the Hardest Negative (best_neg_sim) for deviating from the Global Center (xi).
-        # This keeps the "Spring" anchored to the global average, not the jittery batch average.
-        mvc_batch = (best_neg_sim - xi) ** 2
-        
-        mvc_loss = mvc_batch.mean()
+        mvc_loss = torch.stack(mvc_batch).mean()
 
         # Log MVC components (Log the debiased global values to see the trend)
         self.current_mvc_value = mvc_loss.item()
-        self.current_positive_mean = debiased_pos.item()
-        self.current_negative_mean = debiased_neg.item()
-        self.current_xi = xi.item()
+        self.current_positive_mean = float(self.mu_pos)
+        self.current_negative_mean = float(self.mu_neg)
+        self.current_xi = float(xi)
         
         # -----------------------------------------------------
         # 8. FINAL LOSS (Eq. 32)
