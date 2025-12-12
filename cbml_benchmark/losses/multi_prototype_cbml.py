@@ -16,8 +16,13 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.device_name = getattr(cfg.MODEL, 'DEVICE', 'cuda')
         self.device = torch.device(self.device_name)
 
+        self.mu_pos = 0.0
+        self.mu_neg = 0.0
+        self.momentum_coef = 0.99
+        self.momentum_coef_power = 0.0
+
         self.gamma = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'HYPER_WEIGHT', 0.2)
-        self.lambda_mvc = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'REG_WEIGHT', 5.0)
+        self.lambda_mvc = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'REG_WEIGHT', 10.0)
 
         # Learnable theta (log beta) - Eq. 6
         init_theta = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'INIT_THETA', 1.0)
@@ -286,46 +291,56 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.mpcbml_total = mpcbml_loss.item()
 
         # -----------------------------------------------------
-        # 7. MVC REGULARIZER (Eq. 26-31)
+        # 7. MVC REGULARIZER (Corrected EMA Implementation)
         # -----------------------------------------------------
         
-        # A. Positive Mean: Use Dominant Positive (Hardest/Best match)
-        # Instead of weighted sum of all k prototypes, use the one that matters (pos_sim)
-        # This aligns with the "Dominant" logic of the Bayesian term.
-        mu_pos = pos_sim  # [B] (Already computed in Step 3)
-        
-        # B. Negative Mean: Use Dominant Negative (Hardest)
-        # Instead of weighted sum of all negatives (which dilutes the value),
-        # use the Best Negative Similarity.
-        mu_neg = best_neg_sim # [B] (Already computed in Step 4)
-        
-        # C. Decision Center (Target)
-        # Interpolate between the Hardest Positive and Hardest Negative
-        xi = self.gamma * mu_pos + (1 - self.gamma) * mu_neg # [B]
-        
-        # D. MVC Term
-        # We want to constrain the variance of NEGATIVES around this target xi.
-        # CRITICAL CHOICE:
-        # If we pull ALL negatives to xi, we pull easy negatives (0.0) UP to xi (0.7). This is bad.
-        # We should only regularize the HARD negatives to stay close to xi.
-        
-        # Strategy: Apply L2 penalty only to the Dominant Negative.
-        # This acts as a "Margin Stability" constraint. It prevents the hard negative 
-        # from being pushed too far (overfitting) or getting too close.
-        # It forces the hard negative to hover at specific distance relative to the positive.
-        
-        mvc_per_sample = (mu_neg - xi) ** 2  # [B]
-        
-        # Note: If you want to include top-k hard negatives, you could average their deviations,
-        # but starting with the Dominant Negative is the most consistent with your logic.
-        
-        mvc_loss = mvc_per_sample.mean()
+        # 1. Calculate Batch Statistics (Scalar values)
+        # We detach() because the Target (xi) should be a fixed reference point,
+        # not a variable we backpropagate through.
+        batch_pos_mean = pos_sim.detach().mean()      # Scalar
+        batch_neg_mean = best_neg_sim.detach().mean() # Scalar
 
-        # Log MVC components
+        # 2. Update EMA States (Accumulators)
+        # Note: We do NOT divide by the correction factor here. We keep the raw state.
+        # if self.training:
+        
+        # Compute bias correction factor
+        # Protect against division by zero in first iteration
+        self.momentum_coef_power = self.momentum_coef * self.momentum_coef_power + \
+                                (1 - self.momentum_coef)
+        
+        # Update EMA
+        self.mu_pos = self.momentum_coef * self.mu_pos + \
+                    (1 - self.momentum_coef) * batch_pos_mean
+        self.mu_neg = self.momentum_coef * self.mu_neg + \
+                    (1 - self.momentum_coef) * batch_neg_mean
+
+        # 3. Apply Bias Correction (Temporary variables for calculation)
+        # This handles the "cold start" problem where EMA starts at 0.
+        correction_factor = max(1.0 - self.momentum_coef_power, 1e-8)
+        
+        debiased_pos = self.mu_pos / correction_factor
+        debiased_neg = self.mu_neg / correction_factor
+
+        # 4. Calculate Global Decision Center (xi)
+        # We use the STABLE, DEBIASED global averages
+        xi = self.gamma * debiased_pos + (1 - self.gamma) * debiased_neg
+        
+        # Ensure xi is treated as a constant for the loss calculation
+        xi = xi.detach()
+
+        # 5. MVC Loss Calculation
+        # We penalize the Hardest Negative (best_neg_sim) for deviating from the Global Center (xi).
+        # This keeps the "Spring" anchored to the global average, not the jittery batch average.
+        mvc_batch = (best_neg_sim - xi) ** 2
+        
+        mvc_loss = mvc_batch.mean()
+
+        # Log MVC components (Log the debiased global values to see the trend)
         self.current_mvc_value = mvc_loss.item()
-        self.current_positive_mean = mu_pos.mean().item()
-        self.current_negative_mean = mu_neg.mean().item()
-        self.current_xi = xi.mean().item()
+        self.current_positive_mean = debiased_pos.item()
+        self.current_negative_mean = debiased_neg.item()
+        self.current_xi = xi.item()
         
         # -----------------------------------------------------
         # 8. FINAL LOSS (Eq. 32)
