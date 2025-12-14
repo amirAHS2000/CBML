@@ -42,27 +42,16 @@ class ResNet50(nn.Module):
 
 @registry.BACKBONES.register('resnet18')
 class ResNet18(nn.Module):
-    """
-    ResNet18 backbone that extracts from layer3 (intermediate layer)
-    instead of layer4 (final layer) for better generalization.
-    
-    Output: [B, 256] - matches layer3 output dimension
-    """
 
     def __init__(self):
         super(ResNet18, self).__init__()
         self.model = models.resnet18(pretrained=True)
 
-        # Freeze batch norm
         for module in filter(lambda m: type(m) == nn.BatchNorm2d, self.model.modules()):
             module.eval()
             module.train = lambda _: None
 
     def forward(self, x):
-        """
-        Forward pass - extract from layer3 instead of layer4
-        Returns: [B, 256] from layer3
-        """
         x = self.model.conv1(x)
         x = self.model.bn1(x)
         x = self.model.relu(x)
@@ -70,13 +59,12 @@ class ResNet18(nn.Module):
 
         x = self.model.layer1(x)
         x = self.model.layer2(x)
-        x = self.model.layer3(x)  # ← STOP HERE (layer3 outputs 256D)
-        
-        # Removed: x = self.model.layer4(x)
+        x = self.model.layer3(x)
+        x = self.model.layer4(x)
 
         x = self.model.avgpool(x)
-        x = x.view(x.size(0), -1)  # [B, 256]
-        
+        x = x.view(x.size(0), -1)
+        # x = self.model.fc(x)  --remove
         return x
 
     def load_param(self, model_path):
