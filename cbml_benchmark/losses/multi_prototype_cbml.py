@@ -19,7 +19,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.mu_pos = 0.0
         self.mu_neg = 0.0
         self.momentum_coef = 0.998
-        self.T = 1
+        self.T = 0
 
         self.gamma = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'HYPER_WEIGHT', 0.2)
         self.lambda_mvc = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'REG_WEIGHT', 10.0)
@@ -294,40 +294,41 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # 7. MVC REGULARIZER (Corrected EMA Implementation)
         # -----------------------------------------------------
         
-        # compute batch statistics (detached for EMA measurement)
-        batch_pos_mean = pos_sim.detach().mean().item()
-        batch_neg_mean = best_neg_sim.detach().mean().item()
+        # # compute batch statistics (detached for EMA measurement)
+        # batch_pos_mean = pos_sim.detach().mean().item()
+        # batch_neg_mean = best_neg_sim.detach().mean().item()
 
-        # Update global EMA once per batch (not per sample)
-        if self.T == 0:
-            # cold start: initialize with first batch statistics
-            self.mu_pos = batch_pos_mean
-            self.mu_neg = batch_neg_mean
-        else:
-            # exponential moving average update
-            self.mu_pos = self.momentum_coef * self.mu_pos + (1 - self.momentum_coef) * batch_pos_mean
-            self.mu_neg = self.momentum_coef * self.mu_neg + (1 - self.momentum_coef) * batch_neg_mean
+        # # Update global EMA once per batch (not per sample)
+        # if self.T == 0:
+        #     # cold start: initialize with first batch statistics
+        #     self.mu_pos = batch_pos_mean
+        #     self.mu_neg = batch_neg_mean
+        # else:
+        #     # exponential moving average update
+        #     self.mu_pos = self.momentum_coef * self.mu_pos + (1 - self.momentum_coef) * batch_pos_mean
+        #     self.mu_neg = self.momentum_coef * self.mu_neg + (1 - self.momentum_coef) * batch_neg_mean
         
-        # compute global decision center (anchor point for regularization)
-        xi = self.gamma * self.mu_pos + (1.0 - self.gamma) * self.mu_neg
+        # # compute global decision center (anchor point for regularization)
+        # xi = self.gamma * self.mu_pos + (1.0 - self.gamma) * self.mu_neg
 
-        # MVC loss: penalize negative similarities that deviate from anchor
-        # gradient flows through best_neg_sim -> prevent over-discrimination
-        mvc_loss = ((best_neg_sim - xi) ** 2).mean()
+        # # MVC loss: penalize negative similarities that deviate from anchor
+        # # gradient flows through best_neg_sim -> prevent over-discrimination
+        # mvc_loss = ((best_neg_sim - xi) ** 2).mean()
 
-        # Log MVC components (Log the debiased global values to see the trend)
-        self.current_mvc_value = mvc_loss.item()
-        self.current_positive_mean = self.mu_pos
-        self.current_negative_mean = self.mu_neg
-        self.current_xi = xi
+        # # Log MVC components (Log the debiased global values to see the trend)
+        # self.current_mvc_value = mvc_loss.item()
+        # self.current_positive_mean = self.mu_pos
+        # self.current_negative_mean = self.mu_neg
+        # self.current_xi = xi
         
         # -----------------------------------------------------
         # 8. FINAL LOSS (Eq. 32)
         # -----------------------------------------------------
         # L_total = L_MP + λ_MVC · L_MVC
-        total_loss = mpcbml_loss + self.lambda_mvc * mvc_loss
+        # total_loss = mpcbml_loss + self.lambda_mvc * mvc_loss
+        total_loss = mpcbml_loss
         
         self.current_total_loss = total_loss.item()
-        self.current_mvc_contribution = (self.lambda_mvc * mvc_loss).item()
+        # self.current_mvc_contribution = (self.lambda_mvc * mvc_loss).item()
         
         return total_loss
