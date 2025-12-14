@@ -1,9 +1,29 @@
-
 import torch
 import numpy as np
 
 
-def feat_extractor(model, data_loader, logger=None):
+def feat_extractor(model, data_loader, logger=None, extract_layer=None):
+    """
+    Extract features from the model.
+    
+    Parameters:
+    -----------
+    model : nn.Module
+        The trained model with backbone and head
+    data_loader : DataLoader
+        Data loader for extraction
+    logger : Logger, optional
+        Logger for debugging
+    extract_layer : str, optional
+        Which layer to extract from: 'layer1', 'layer2', 'layer3', 'layer4', or None
+        If None (default): uses model's output (full forward pass)
+        If specified: extracts from that specific backbone layer
+    
+    Returns:
+    --------
+    feats : np.ndarray
+        Extracted features [num_samples, feature_dim]
+    """
     model.eval()
     feats = list()
 
@@ -11,14 +31,48 @@ def feat_extractor(model, data_loader, logger=None):
         imgs = batch[0].cuda()
 
         with torch.no_grad():
-            out = model(imgs).data.cpu().numpy()
+            if extract_layer is None:
+                # Standard extraction: full forward pass through model
+                out = model(imgs).data.cpu().numpy()
+            else:
+                # Extract from intermediate layer of backbone
+                backbone = model.backbone
+                
+                # Get features from the specified layer
+                x = imgs
+                x = backbone.model.conv1(x)
+                x = backbone.model.bn1(x)
+                x = backbone.model.relu(x)
+                x = backbone.model.maxpool(x)
+                
+                x = backbone.model.layer1(x)
+                if extract_layer == 'layer1':
+                    x = backbone.model.avgpool(x)
+                    out = x.view(x.size(0), -1).data.cpu().numpy()
+                else:
+                    x = backbone.model.layer2(x)
+                    if extract_layer == 'layer2':
+                        x = backbone.model.avgpool(x)
+                        out = x.view(x.size(0), -1).data.cpu().numpy()
+                    else:
+                        x = backbone.model.layer3(x)
+                        if extract_layer == 'layer3':
+                            x = backbone.model.avgpool(x)
+                            out = x.view(x.size(0), -1).data.cpu().numpy()
+                        else:
+                            x = backbone.model.layer4(x)
+                            x = backbone.model.avgpool(x)
+                            out = x.view(x.size(0), -1).data.cpu().numpy()
+            
             feats.append(out)
 
         if logger is not None and (i + 1) % 100 == 0:
             logger.debug(f'Extract Features: [{i + 1}/{len(data_loader)}]')
         del out
+    
     feats = np.vstack(feats)
     return feats
+
 
 def compute_similarity_stats(model, criterion, loader, device):
     """

@@ -83,7 +83,7 @@ def do_train(
             # Extract labels and features for validation set.
             labels = val_loader.dataset.label_list
             labels = np.array([int(k) for k in labels])
-            feats = feat_extractor(model, val_loader, logger=logger)  # Feature extraction.
+            feats = feat_extractor(model, val_loader, logger=logger, extract_layer='layer3')  # Feature extraction.
 
             # Compute retrieval metrics (e.g., recall at K).
             ret_metric = RetMetric(feats=feats, labels=labels)
@@ -421,7 +421,7 @@ def do_test(
     # Extract labels and features for the test set.
     labels = val_loader.dataset.label_list
     labels = np.array([int(k) for k in labels])
-    feats = feat_extractor(model, val_loader, logger=logger)  # Feature extraction.
+    feats = feat_extractor(model, val_loader, logger=logger, extract_layer='layer3')  # Feature extraction.
 
     # Compute retrieval metrics (e.g., recall at K).
     ret_metric = RetMetric(feats=feats, labels=labels)
