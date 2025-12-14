@@ -72,7 +72,6 @@ def do_train(
     header_written = os.path.exists(stats_log_path)
 
     for iteration, (images, targets) in enumerate(train_loader, start_iter):
-        criterion.iteration_counter(iteration + 1)
         # ====================================================================
         # VALIDATION
         # ====================================================================

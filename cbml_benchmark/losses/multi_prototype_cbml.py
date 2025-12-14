@@ -19,7 +19,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
         self.mu_pos = 0.0
         self.mu_neg = 0.0
         self.momentum_coef = 0.998
-        self.T = 0
+        self.T = 1
 
         self.gamma = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'HYPER_WEIGHT', 0.2)
         self.lambda_mvc = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'REG_WEIGHT', 10.0)
@@ -81,10 +81,6 @@ class MultiPrototypeCBMLLoss(nn.Module):
         
         # Beta tracking
         self.current_beta = 1.0
-
-    def iteration_counter(self, iteration):
-        self.T = iteration
-        print(self.T)
 
     @torch.no_grad()
     def set_prototypes_and_weights(self, prototypes, cluster_sizes):
@@ -181,7 +177,7 @@ class MultiPrototypeCBMLLoss(nn.Module):
     # FORWARD: Complete MP-CBML Loss (Eq. 24)
     # ------------------------------------------------------
     def forward(self, embeddings, targets):
-        self._enforce_constraints()
+        self.T += 1
 
         embeddings = embeddings.to(self.device)
         targets = targets.to(self.device)
@@ -297,27 +293,33 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # -----------------------------------------------------
         # 7. MVC REGULARIZER (Corrected EMA Implementation)
         # -----------------------------------------------------
-        mvc_batch = []
-        for i in range(B):
-            best_pos_sim_i = pos_sim[i].detach().item()
-            best_neg_sim_i = best_neg_sim[i].detach().item()
-
-            self.mu_pos = self.momentum_coef * self.mu_pos + (1 - self.momentum_coef) * best_pos_sim_i
-            self.mu_neg = self.momentum_coef * self.mu_neg + (1 - self.momentum_coef) * best_neg_sim_i
-
-            bias_corrected_mu_pos = self.mu_pos / (1.0 - (self.momentum_coef ** self.T))
-            bias_corrected_mu_neg = self.mu_neg / (1.0 - (self.momentum_coef ** self.T))
-            xi = self.gamma * bias_corrected_mu_pos + (1.0 - self.gamma) * bias_corrected_mu_neg
-            mvc_i = (best_neg_sim[i] - xi.detach()) ** 2 # here just gradient flows through the selected best negative similarity
-            mvc_batch.append(mvc_i)
         
-        mvc_loss = torch.stack(mvc_batch).mean()
+        # compute batch statistics (detached for EMA measurement)
+        batch_pos_mean = pos_sim.detach().mean().item()
+        batch_neg_mean = best_neg_sim.detach().mean().item()
+
+        # Update global EMA once per batch (not per sample)
+        if self.T == 0:
+            # cold start: initialize with first batch statistics
+            self.mu_pos = batch_pos_mean
+            self.mu_neg = batch_neg_mean
+        else:
+            # exponential moving average update
+            self.mu_pos = self.momentum_coef * self.mu_pos + (1 - self.momentum_coef) * batch_pos_mean
+            self.mu_neg = self.momentum_coef * self.mu_neg + (1 - self.momentum_coef) * batch_neg_mean
+        
+        # compute global decision center (anchor point for regularization)
+        xi = self.gamma * self.mu_pos + (1.0 - self.gamma) * self.mu_neg
+
+        # MVC loss: penalize negative similarities that deviate from anchor
+        # gradient flows through best_neg_sim -> prevent over-discrimination
+        mvc_loss = ((best_neg_sim - xi) ** 2).mean()
 
         # Log MVC components (Log the debiased global values to see the trend)
         self.current_mvc_value = mvc_loss.item()
-        self.current_positive_mean = float(self.mu_pos)
-        self.current_negative_mean = float(self.mu_neg)
-        self.current_xi = float(xi)
+        self.current_positive_mean = self.mu_pos
+        self.current_negative_mean = self.mu_neg
+        self.current_xi = xi
         
         # -----------------------------------------------------
         # 8. FINAL LOSS (Eq. 32)
