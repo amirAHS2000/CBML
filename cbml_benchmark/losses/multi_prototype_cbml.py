@@ -48,9 +48,6 @@ class MultiPrototypeCBMLLoss(nn.Module):
             requires_grad=False
         )
 
-        # Learning rate for weight updates (α in Eq. 35)
-        self.weight_lr = getattr(cfg.LOSSES.MULTI_PROTOTYPE_CBML, 'WEIGHT_LR', 0.01)
-
         # ==========================================
         # ENHANCED LOGGING VARIABLES
         # ==========================================
@@ -177,7 +174,8 @@ class MultiPrototypeCBMLLoss(nn.Module):
     # FORWARD: Complete MP-CBML Loss (Eq. 24)
     # ------------------------------------------------------
     def forward(self, embeddings, targets):
-        self.T += 1
+        # self.T += 1
+        self._enforce_constraints()
 
         embeddings = embeddings.to(self.device)
         targets = targets.to(self.device)
@@ -320,15 +318,24 @@ class MultiPrototypeCBMLLoss(nn.Module):
         # self.current_positive_mean = self.mu_pos
         # self.current_negative_mean = self.mu_neg
         # self.current_xi = xi
-        
+
+        mu_pos = pos_sim
+        mu_neg = best_neg_sim
+        xi = self.gamma * mu_pos + (1 - self.gamma) * mu_neg
+        mvc_loss = (torch.abs(mu_neg - xi)).mean()
+
+        self.current_mvc_value = mvc_loss.item()
+        self.current_positive_mean = mu_pos.mean().item()
+        self.current_negative_mean = mu_neg.mean().item()
+        self.current_xi = xi.mean().item()
+
         # -----------------------------------------------------
         # 8. FINAL LOSS (Eq. 32)
         # -----------------------------------------------------
         # L_total = L_MP + λ_MVC · L_MVC
-        # total_loss = mpcbml_loss + self.lambda_mvc * mvc_loss
-        total_loss = mpcbml_loss
+        total_loss = mpcbml_loss + self.lambda_mvc * mvc_loss
         
         self.current_total_loss = total_loss.item()
-        # self.current_mvc_contribution = (self.lambda_mvc * mvc_loss).item()
+        self.current_mvc_contribution = (self.lambda_mvc * mvc_loss).item()
         
         return total_loss
