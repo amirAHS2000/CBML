@@ -20,15 +20,15 @@ SOLVER:
   WEIGHT_DECAY: 0.0005
 
 LOSSES:
-  NAME: 'multi_prototype_cbml'
-  MULTI_PROTOTYPE_CBML:
+  NAME: 'mpcbml_loss'
+  MPCBML_LOSS:
     INIT_METHOD: 'random'
-    N_CLASSES: 98        # Cars196 has 196 classes, but often split as 98 train + 98 test
+    N_CLASSES: 98
     PROTOTYPE_PER_CLASS: 3
-    HYPER_WEIGHT: 0.2
-    REG_WEIGHT: 1.0
-    N_NEGATIVES: 1
-    LEARNABLE_WEIGHTS: True
+    GAMMA_REG: 0.2
+    LAMBDA_REG: 1.0
+    THETA_IS_LEARNABLE: False
+    INIT_THETA: 1.0
 
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/Cars196/train.txt

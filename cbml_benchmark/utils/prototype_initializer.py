@@ -47,12 +47,12 @@ def initialize_prototypes_mean(model, cfg):
         normalize_transform,
     ])
 
-    img_path_cls = {cls: [] for cls in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES)}
+    img_path_cls = {cls: [] for cls in range(cfg.LOSSES.MPCBML_LOSS.N_CLASSES)}
     BASE_DIR = os.path.dirname(cfg.DATA.TRAIN_IMG_SOURCE)
 
     prototypes = torch.zeros(
-        cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
-        cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
+        cfg.LOSSES.MPCBML_LOSS.N_CLASSES,
+        cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS,
         cfg.MODEL.HEAD.DIM,
         device=cfg.MODEL.DEVICE
     )
@@ -66,11 +66,11 @@ def initialize_prototypes_mean(model, cfg):
             except Exception as e:
                 print(f"Error loading image {path}: {e}")
 
-    for cls in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES):
+    for cls in range(cfg.LOSSES.MPCBML_LOSS.N_CLASSES):
         if not img_path_cls[cls]:
             # random initialization if no images for this class
             prototypes[cls] = torch.randn(
-                cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
+                cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS,
                 cfg.MODEL.HEAD.DIM,
                 device=cfg.MODEL.DEVICE
             )
@@ -102,7 +102,7 @@ def initialize_prototypes_mean(model, cfg):
 
         class_mean = torch.tensor(class_mean_np, dtype=torch.float, device=cfg.MODEL.DEVICE)
         
-        for k in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS):
+        for k in range(cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS):
             noise = torch.randn(cfg.MODEL.HEAD.DIM, device=cfg.MODEL.DEVICE) * 0.01 # noise
             prototypes[cls, k] = class_mean + noise
 
@@ -127,19 +127,19 @@ def initialize_prototypes_kmeans(model, cfg):
         normalize_transform,
     ])
 
-    img_path_cls = {cls: [] for cls in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES)}
+    img_path_cls = {cls: [] for cls in range(cfg.LOSSES.MPCBML_LOSS.N_CLASSES)}
     BASE_DIR = os.path.dirname(cfg.DATA.TRAIN_IMG_SOURCE)
 
     prototypes = torch.zeros(
-        cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
-        cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
+        cfg.LOSSES.MPCBML_LOSS.N_CLASSES,
+        cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS,
         cfg.MODEL.HEAD.DIM,
         device=cfg.MODEL.DEVICE
     )
 
     cluster_sizes = torch.zeros(
-        cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
-        cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
+        cfg.LOSSES.MPCBML_LOSS.N_CLASSES,
+        cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS,
         device=cfg.MODEL.DEVICE
     )
 
@@ -152,11 +152,11 @@ def initialize_prototypes_kmeans(model, cfg):
             except Exception as e:
                 print(f"Error loading image {path}: {e}")
 
-    for cls in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES):
+    for cls in range(cfg.LOSSES.MPCBML_LOSS.N_CLASSES):
         if not img_path_cls[cls]:
             # Random initialization if no images for this class
             prototypes[cls] = torch.randn(
-                cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
+                cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS,
                 cfg.MODEL.HEAD.DIM,
                 device=cfg.MODEL.DEVICE
             )
@@ -179,26 +179,26 @@ def initialize_prototypes_kmeans(model, cfg):
         del images
         torch.cuda.empty_cache()
 
-        if len(feats_np) >= cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS:
+        if len(feats_np) >= cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS:
             kmeans = KMeans(
-                n_clusters=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
+                n_clusters=cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS,
                 random_state=0,
                 n_init=10
             ).fit(feats_np)
             centers = torch.tensor(kmeans.cluster_centers_, dtype=torch.float)
             prototypes[cls] = centers.to(cfg.MODEL.DEVICE)
-            cluster_sizes[cls] = torch.tensor(np.bincount(kmeans.labels_, minlength=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS), device=cfg.MODEL.DEVICE).float()
+            cluster_sizes[cls] = torch.tensor(np.bincount(kmeans.labels_, minlength=cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS), device=cfg.MODEL.DEVICE).float()
             del kmeans
             del centers
             torch.cuda.empty_cache()
         else:
             mean_feat = torch.tensor(feats_np.mean(axis=0), dtype=torch.float)
-            for k in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS):
+            for k in range(cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS):
                 noise = torch.randn(cfg.MODEL.HEAD.DIM, device=cfg.MODEL.DEVICE) * 0.01
                 prototypes[cls, k] = mean_feat.to(cfg.MODEL.DEVICE) + noise
                 del noise
                 torch.cuda.empty_cache()
-            cluster_sizes[cls] = torch.ones(cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS, device=cfg.MODEL.DEVICE) / cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS
+            cluster_sizes[cls] = torch.ones(cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS, device=cfg.MODEL.DEVICE) / cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS
             del mean_feat
             torch.cuda.empty_cache()
 

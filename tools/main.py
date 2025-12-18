@@ -28,35 +28,33 @@ def train(cfg):
     if cfg.LOSSES.NAME_AUX != '':
         criterion_aux = build_aux_loss(cfg)
 
-    # initializing prototypes if using multi_prototype_cbml loss
-    if cfg.LOSSES.NAME == 'multi_prototype_cbml':
-        logger.info(f"Initializing prototypes using {cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD}...")
+    # initializing prototypes if using mpcbml loss
+    if cfg.LOSSES.NAME == 'mpcbml_loss':
+        logger.info(f"Initializing prototypes using {cfg.LOSSES.MPCBML_LOSS.INIT_METHOD}...")
 
-        if cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'kmeans':
+        if cfg.LOSSES.MPCBML_LOSS.INIT_METHOD == 'kmeans':
             prototypes, cluster_sizes = initialize_prototypes_kmeans(
                 model=model,
                 cfg=cfg
             )
-        elif cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'mean':
+        elif cfg.LOSSES.MPCBML_LOSS.INIT_METHOD == 'mean':
             prototypes = initialize_prototypes_mean(
                 model=model,
                 cfg=cfg
             )
             cluster_sizes = None  # No cluster sizes for mean init
-        elif cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD == 'random':
+        elif cfg.LOSSES.MPCBML_LOSS.INIT_METHOD == 'random':
             prototypes = initialize_prototypes_random(
-                num_classes=cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES,
-                prototype_per_class=cfg.LOSSES.MULTI_PROTOTYPE_CBML.PROTOTYPE_PER_CLASS,
+                num_classes=cfg.LOSSES.MPCBML_LOSS.N_CLASSES,
+                prototype_per_class=cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS,
                 embed_dim=cfg.MODEL.HEAD.DIM,
                 device=device
             )
             cluster_sizes = None  # No cluster sizes for random init
         else:
-            raise ValueError(f"Unknown initializing method: {cfg.LOSSES.MULTI_PROTOTYPE_CBML.INIT_METHOD}")
+            raise ValueError(f"Unknown initializing method: {cfg.LOSSES.MPCBML_LOSS.INIT_METHOD}")
 
         # Set prototypes and weights in the loss
-        # normalize the prototypes
-        prototypes = F.normalize(prototypes, p=2, dim=2)
         criterion.set_prototypes_and_weights(prototypes, cluster_sizes)
         # clear the orginal prototypes tensor
         del prototypes
@@ -65,7 +63,7 @@ def train(cfg):
         logger.info("Prototype initialization complete.")
 
     loss_param = None
-    if cfg.LOSSES.NAME == 'softtriple_loss' or cfg.LOSSES.NAME == 'proxynca_loss' or cfg.LOSSES.NAME == 'center_loss' or cfg.LOSSES.NAME == 'adv_loss' or cfg.LOSSES.NAME == 'multi_prototype_cbml':
+    if cfg.LOSSES.NAME == 'softtriple_loss' or cfg.LOSSES.NAME == 'proxynca_loss' or cfg.LOSSES.NAME == 'center_loss' or cfg.LOSSES.NAME == 'adv_loss' or cfg.LOSSES.NAME == 'mpcbml_loss':
         loss_param = criterion
     if cfg.LOSSES.NAME_AUX == 'softtriple_loss' or cfg.LOSSES.NAME_AUX == 'proxynca_loss' or cfg.LOSSES.NAME_AUX == 'center_loss' or cfg.LOSSES.NAME_AUX == 'adv_loss':
         loss_param = criterion_aux
@@ -101,7 +99,6 @@ def train(cfg):
         checkpoint_period,
         arguments,
         logger
-        # dual_optimizer=dual_optimizer
     )
 
 def test(cfg):
@@ -144,13 +141,13 @@ if __name__ == '__main__':
     args = parse_args()
     cfg.merge_from_file(args.cfg_file)
 
-    if cfg.LOSSES.NAME == 'multi_prototype_cbml':
+    if cfg.LOSSES.NAME == 'mpcbml_loss':
         with open(cfg.DATA.CLASS_COUNT_SOURCE, 'r') as fp:
             class_counts = json.load(fp)
         total = sum(class_counts.values())
         # assuming classes are stored as string keys "0", "1", ..., ensure correct order:
-        priors = [class_counts.get(str(i), 0) / total for i in range(cfg.LOSSES.MULTI_PROTOTYPE_CBML.N_CLASSES)]
-        cfg.LOSSES.MULTI_PROTOTYPE_CBML.CLASS_PRIORS = priors
+        priors = [class_counts.get(str(i), 0) / total for i in range(cfg.LOSSES.MPCBML_LOSS.N_CLASSES)]
+        cfg.LOSSES.MPCBML_LOSS.CLASS_PRIORS = priors
 
     if args.train_test == 'train':
         train(cfg)

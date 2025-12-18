@@ -99,19 +99,11 @@ def do_train(
             # ================================================================
             # MP-CBML ENHANCED STATISTICS LOGGING
             # ================================================================
-            if cfg.LOSSES.NAME == 'multi_prototype_cbml':
+            if cfg.LOSSES.NAME == 'mpcbml_loss':
                 plot_dir = os.path.join('outputs', 'dist_plots')
                 os.makedirs(plot_dir, exist_ok=True)
 
                 logger.info('Computing Similarity Distributions...')
-
-                # validation set distribution (generalization check)
-                # val_pos, val_neg = compute_similarity_stats(model, criterion, val_loader, device)
-                # plot_distribution_figure(
-                #     val_pos, val_neg,
-                #     title=f'Val Distribution (Iter {iteration})',
-                #     save_path=os.path.join(plot_dir, f'val_dist_{iteration:06d}.png')
-                # )
 
                 # training set distribution (overfitting check)
                 # use eval_train_loader (no augmentation) to get clean stats
@@ -156,7 +148,6 @@ def do_train(
                 
                 # Beta parameter (NEW - replaces log_weight stats)
                 current_beta = getattr(criterion, 'current_beta', 1.0)
-                theta_value = criterion.theta.item()  # log(beta)
                 
                 # Weight entropy
                 weight_entropy_stats = criterion.show_weight_entropy()
@@ -184,7 +175,7 @@ def do_train(
                             # Weight statistics
                             'mean_entropy', 'mean_max_weight',
                             # Beta parameter (temperature)
-                            'beta', 'theta',
+                            'beta',
                             # Weight sum verification (constraint check)
                             'weight_sum_min', 'weight_sum_max', 'weight_sum_std'
                         ])
@@ -221,7 +212,6 @@ def do_train(
                         round(weight_stats['mean_max_weight'], 5),
                         # Beta parameter
                         round(current_beta, 5),
-                        round(theta_value, 5),
                         # Weight sum verification
                         round(weight_sum_min, 6),
                         round(weight_sum_max, 6),
@@ -336,7 +326,7 @@ def do_train(
         loss.backward()         # Compute gradients.
 
         # CRITICAL: Perform constrained weight update BEFORE optimizer.step()
-        if cfg.LOSSES.NAME == 'multi_prototype_cbml':
+        if cfg.LOSSES.NAME == 'mpcbml_loss':
             criterion.constrained_weight_update()
 
         optimizer.step()        # Update model parameters.
@@ -399,12 +389,6 @@ def do_train(
 
     # Log the best iteration and recall achieved.
     logger.info(f"Best iteration: {best_iteration :06d} | best recall {best_recall} ")
-
-    # visualization after training
-    # plots_dir = 'outputs/plots'
-    # os.makedirs(plots_dir, exist_ok=True)
-    # plot scalar trends from logged CSV
-    # plot_scalar_trends(log_path='outputs/statistics_log.csv', save_dir=plots_dir)
 
 def do_test(
         model,        # Neural network model to evaluate.
