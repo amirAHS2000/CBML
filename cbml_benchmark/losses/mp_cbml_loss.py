@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from cbml_benchmark.losses.registry import LOSS
+from cbml_benchmark.utils.prototype_weight_monitor import compute_proto_stats, compute_weight_stats
 
 
 @LOSS.register('mpcbml_loss')
@@ -107,83 +108,13 @@ class MpcbmlLoss(nn.Module):
         with torch.no_grad():
             self.prototypes = F.normalize(self.prototypes, p=2, dim=2)
 
-    @torch.no_grad()
-    def compute_proto_stats(prototypes: torch.Tensor, initial_prototypes: torch.Tensor = None):
-        """
-        Compute intra/inter distances, norms, and displacement of prototypes.
-        Args:
-            prototypes: [C, K, D] tensor of current prototypes
-            initial_prototypes: [C, K, D] optional tensor for displacement measurement
-        Returns:
-            dict with intra, inter, norm, and (optional) displacement stats
-        """
-        protos = F.normalize(prototypes, p=2, dim=-1)
-        C, K, D = protos.shape
-
-        # --- Intra-class distances ---
-        intra = torch.stack([
-            torch.pdist(protos[c], p=2).mean()
-            if K > 1 else torch.tensor(0., device=protos.device)
-            for c in range(C)
-        ])
-        mean_intra = intra.mean().item()
-
-        # --- Inter-class distances ---
-        flat = protos.view(C * K, D)
-        dist = torch.cdist(flat, flat, p=2)
-        mask = torch.ones_like(dist, dtype=torch.bool)
-        for c in range(C):
-            mask[c*K:(c+1)*K, c*K:(c+1)*K] = False
-        inter = dist[mask].mean().item()
-
-        # --- Norms ---
-        norms = protos.norm(dim=-1).mean().item()
-
-        stats = {
-            "mean_intra_dist": round(mean_intra, 5),
-            "mean_inter_dist": round(inter, 5),
-            "mean_proto_norm": round(norms, 5)
-        }
-
-        if initial_prototypes is not None:
-            disp = torch.norm(protos - F.normalize(initial_prototypes, p=2, dim=-1), dim=-1).mean().item()
-            stats["mean_displacement"] = round(disp, 5)
-
-        return stats
-    
-    @torch.no_grad()
-    def compute_weight_stats(weights: torch.Tensor):
-        """
-        Compute statistics over class-prototype weights.
-        Args:
-            weights: [C, K] raw weight tensor (before softmax)
-        Returns:
-            dict with entropy, variance, and dominance statistics
-        """
-
-        w = F.softmax(weights, dim=1)
-        entropy = (-w * (w.clamp_min(1e-9)).log()).sum(dim=1)
-        mean_entropy = entropy.mean().item()
-        var_entropy = entropy.var(unbiased=False).item()
-        weight_var = w.var(dim=1).mean().item()
-        max_weight_mean = w.max(dim=1)[0].mean().item()
-
-        return {
-            "mean_entropy": round(mean_entropy, 5),
-            "var_entropy": round(var_entropy, 5),
-            "mean_weight_var": round(weight_var, 5),
-            "mean_max_weight": round(max_weight_mean, 5),
-        }
-
     def show_prototype_stats(self, initial_prototypes=None):
         if initial_prototypes is None and hasattr(self, "initial_prototypes"):
             initial_prototypes = self.initial_prototypes
-        prototype_statistics = self.compute_proto_stats(self.prototypes.detach(), initial_prototypes)
-        return prototype_statistics
-    
+        return compute_proto_stats(self.prototypes.detach(), initial_prototypes)
+        
     def show_weight_stats(self):
-        weight_statistics = self.compute_weight_stats(self.weights.detach())
-        return weight_statistics
+        return compute_weight_stats(self.weights.detach())
     
     def show_weight_entropy(self):
         """Compute entropy of weight distribution per class."""
@@ -212,127 +143,127 @@ class MpcbmlLoss(nn.Module):
         # Replace gradients with mean-subtracted version
         self.weights.grad.copy_(grad_tilde)
 
-def forward(self, embeddings, targets):
-    self._enforce_constraints()
+    def forward(self, embeddings, targets):
+        self._enforce_constraints()
 
-    embeddings = embeddings.to(self.device)
-    targets = targets.to(self.device)
+        embeddings = embeddings.to(self.device)
+        targets = targets.to(self.device)
 
-    B = embeddings.size(0)
-    C, K, D = self.num_classes, self.prototype_per_class, self.embed_dim
-    eps = 1e-9
+        B = embeddings.size(0)
+        C, K, D = self.num_classes, self.prototype_per_class, self.embed_dim
+        eps = 1e-9
 
-    # =====================================================
-    # 0. Normalize embeddings
-    # =====================================================
-    z = F.normalize(embeddings, p=2, dim=1)  # [B, D]
-    protos = self.prototypes  # [C, K, D]
-    W = self.weights  # [C, K]
+        # =====================================================
+        # 0. Normalize embeddings
+        # =====================================================
+        z = F.normalize(embeddings, p=2, dim=1)  # [B, D]
+        protos = self.prototypes  # [C, K, D]
+        W = self.weights  # [C, K]
 
-    # Get current beta
-    beta = torch.exp(self.theta)
-    self.current_beta = beta.item()
+        # Get current beta
+        beta = torch.exp(self.theta)
+        self.current_beta = beta.item()
 
-    # =====================================================
-    # 1. Compute similarities
-    # =====================================================
-    sims = torch.matmul(z, protos.view(C*K, D).t()).view(B, C, K)  # [B,C,K]
+        # =====================================================
+        # 1. Compute similarities
+        # =====================================================
+        sims = torch.matmul(z, protos.view(C*K, D).t()).view(B, C, K)  # [B,C,K]
 
-    # =====================================================
-    # 2. Compute log-probability contribution
-    # =====================================================
-    log_prob_contrib = torch.log(W.unsqueeze(0) + eps) + beta * sims  # [B, C, K]
+        # =====================================================
+        # 2. Compute log-probability contribution
+        # =====================================================
+        log_prob_contrib = torch.log(W.unsqueeze(0) + eps) + beta * sims  # [B, C, K]
 
-    # =====================================================
-    # 3. Masks
-    # =====================================================
-    y_onehot = F.one_hot(targets, num_classes=C).bool()  # [B,C]
-    neg_mask = ~y_onehot  # [B,C]
+        # =====================================================
+        # 3. Masks
+        # =====================================================
+        y_onehot = F.one_hot(targets, num_classes=C).bool()  # [B,C]
+        neg_mask = ~y_onehot  # [B,C]
 
-    # =====================================================
-    # 4. POSITIVE SELECTION
-    # =====================================================
-    pos_log_contrib = log_prob_contrib[y_onehot].view(B, K)  # [B,K]
-    pos_raw = sims[y_onehot].view(B, K)  # [B,K]
-    pos_w = W[targets]  # [B,K]
-    prior_pos = self.class_priors[targets]  # [B]
+        # =====================================================
+        # 4. POSITIVE SELECTION
+        # =====================================================
+        pos_log_contrib = log_prob_contrib[y_onehot].view(B, K)  # [B,K]
+        pos_raw = sims[y_onehot].view(B, K)  # [B,K]
+        pos_w = W[targets]  # [B,K]
+        prior_pos = self.class_priors[targets]  # [B]
 
-    best_pos_idx = pos_log_contrib.argmax(dim=-1)  # [B]
-    pos_sim = pos_raw[torch.arange(B), best_pos_idx]  # [B]
-    w_pos = pos_w[torch.arange(B), best_pos_idx]  # [B]
+        best_pos_idx = pos_log_contrib.argmax(dim=-1)  # [B]
+        pos_sim = pos_raw[torch.arange(B), best_pos_idx]  # [B]
+        w_pos = pos_w[torch.arange(B), best_pos_idx]  # [B]
 
-    # =====================================================
-    # 5. NEGATIVE SELECTION
-    # =====================================================
-    # Step 1: Extract info for all negative classes
-    neg_log_contrib = log_prob_contrib[neg_mask].view(B, C-1, K)  # [B, C-1, K]
-    neg_raw = sims[neg_mask].view(B, C-1, K)  # [B, C-1, K]
-    
-    # Expand weights and priors
-    W_expanded = W.unsqueeze(0).expand(B, C, K)  # [B, C, K]
-    neg_W = W_expanded[neg_mask].view(B, C-1, K)  # [B, C-1, K]
-    
-    class_priors_exp = self.class_priors.unsqueeze(0).expand(B, C)  # [B, C]
-    neg_priors = class_priors_exp[neg_mask].view(B, C-1)  # [B, C-1]
+        # =====================================================
+        # 5. NEGATIVE SELECTION
+        # =====================================================
+        # Step 1: Extract info for all negative classes
+        neg_log_contrib = log_prob_contrib[neg_mask].view(B, C-1, K)  # [B, C-1, K]
+        neg_raw = sims[neg_mask].view(B, C-1, K)  # [B, C-1, K]
+        
+        # Expand weights and priors
+        W_expanded = W.unsqueeze(0).expand(B, C, K)  # [B, C, K]
+        neg_W = W_expanded[neg_mask].view(B, C-1, K)  # [B, C-1, K]
+        
+        class_priors_exp = self.class_priors.unsqueeze(0).expand(B, C)  # [B, C]
+        neg_priors = class_priors_exp[neg_mask].view(B, C-1)  # [B, C-1]
 
-    # Step 2: Find best prototype per negative class using log-probability criterion
-    best_neg_log_contrib, best_neg_k = neg_log_contrib.max(dim=-1)  # [B, C-1]
-    
-    b_idx = torch.arange(B, device=self.device)
-    
-    # Get log-weights at best prototypes
-    best_neg_log_w = torch.log(neg_W[b_idx, torch.arange(C-1), best_neg_k] + eps)  # [B, C-1]
-    best_neg_raw_sim = neg_raw[b_idx, torch.arange(C-1), best_neg_k]  # [B, C-1]
-    
-    # Score = log(p(c)) + log(w_c^ℓ*) + β * s_c^ℓ*
-    neg_class_scores = (torch.log(neg_priors + eps) + 
-                        best_neg_log_w + 
-                        beta * best_neg_raw_sim)  # [B, C-1]
-    
-    # Select dominant negative class
-    best_neg_class = neg_class_scores.argmax(dim=-1)  # [B]
+        # Step 2: Find best prototype per negative class using log-probability criterion
+        best_neg_log_contrib, best_neg_k = neg_log_contrib.max(dim=-1)  # [B, C-1]
+        
+        b_idx = torch.arange(B, device=self.device)
+        
+        # Get log-weights at best prototypes
+        best_neg_log_w = torch.log(neg_W[b_idx, torch.arange(C-1), best_neg_k] + eps)  # [B, C-1]
+        best_neg_raw_sim = neg_raw[b_idx, torch.arange(C-1), best_neg_k]  # [B, C-1]
+        
+        # Score = log(p(c)) + log(w_c^ℓ*) + β * s_c^ℓ*
+        neg_class_scores = (torch.log(neg_priors + eps) + 
+                            best_neg_log_w + 
+                            beta * best_neg_raw_sim)  # [B, C-1]
+        
+        # Select dominant negative class
+        best_neg_class = neg_class_scores.argmax(dim=-1)  # [B]
 
-    # Extract selected negative prototype info
-    best_neg_sim = neg_raw[b_idx, best_neg_class, best_neg_k[b_idx, best_neg_class]]  # [B]
-    w_neg = neg_W[b_idx, best_neg_class, best_neg_k[b_idx, best_neg_class]]  # [B]
-    prior_neg = neg_priors[b_idx, best_neg_class]  # [B]
+        # Extract selected negative prototype info
+        best_neg_sim = neg_raw[b_idx, best_neg_class, best_neg_k[b_idx, best_neg_class]]  # [B]
+        w_neg = neg_W[b_idx, best_neg_class, best_neg_k[b_idx, best_neg_class]]  # [B]
+        prior_neg = neg_priors[b_idx, best_neg_class]  # [B]
 
-    # Log selected similarities
-    self.current_pos_sim = pos_sim.mean().item()
-    self.current_neg_sim = best_neg_sim.mean().item()
-    self.current_sim_margin = (pos_sim - best_neg_sim).mean().item()
+        # Log selected similarities
+        self.current_pos_sim = pos_sim.mean().item()
+        self.current_neg_sim = best_neg_sim.mean().item()
+        self.current_sim_margin = (pos_sim - best_neg_sim).mean().item()
 
-    # =====================================================
-    # 6. BAYESIAN LOSS
-    # =====================================================
-    log_A_pos = torch.log(prior_pos + eps) + torch.log(w_pos + eps) + beta * pos_sim  # [B]
-    log_A_neg = torch.log(prior_neg + eps) + torch.log(w_neg + eps) + beta * best_neg_sim  # [B]
-    
-    log_denominator = torch.logsumexp(torch.stack([log_A_pos, log_A_neg], dim=0), dim=0)  # [B]
-    
-    mpcbml_loss = (-log_A_pos + log_denominator).mean()  # scalar
+        # =====================================================
+        # 6. BAYESIAN LOSS
+        # =====================================================
+        log_A_pos = torch.log(prior_pos + eps) + torch.log(w_pos + eps) + beta * pos_sim  # [B]
+        log_A_neg = torch.log(prior_neg + eps) + torch.log(w_neg + eps) + beta * best_neg_sim  # [B]
+        
+        log_denominator = torch.logsumexp(torch.stack([log_A_pos, log_A_neg], dim=0), dim=0)  # [B]
+        
+        mpcbml_loss = (-log_A_pos + log_denominator).mean()  # scalar
 
-    # =====================================================
-    # 7. COMPONENT LOGGING (for debugging)
-    # =====================================================
-    sim_term = beta * (pos_sim - best_neg_sim)  # [B]
-    
-    log_prior_pos = torch.log(prior_pos + eps)
-    log_prior_neg = torch.log(prior_neg + eps)
-    log_w_pos = torch.log(w_pos + eps)
-    log_w_neg = torch.log(w_neg + eps)
-    
-    prior_bias = log_prior_pos - log_prior_neg  # [B]
-    weight_bias = log_w_pos - log_w_neg  # [B]
-    bias_term = prior_bias + weight_bias  # [B]
-    
-    self.sim_mpcbml_total = (-sim_term).mean().item()
-    self.bias_mpcbml_total = (-bias_term).mean().item()
-    self.prior_bias_total = prior_bias.mean().item()
-    self.weight_bias_total = weight_bias.mean().item()
-    self.mpcbml_total = mpcbml_loss.item()
+        # =====================================================
+        # 7. COMPONENT LOGGING (for debugging)
+        # =====================================================
+        sim_term = beta * (pos_sim - best_neg_sim)  # [B]
+        
+        log_prior_pos = torch.log(prior_pos + eps)
+        log_prior_neg = torch.log(prior_neg + eps)
+        log_w_pos = torch.log(w_pos + eps)
+        log_w_neg = torch.log(w_neg + eps)
+        
+        prior_bias = log_prior_pos - log_prior_neg  # [B]
+        weight_bias = log_w_pos - log_w_neg  # [B]
+        bias_term = prior_bias + weight_bias  # [B]
+        
+        self.sim_mpcbml_total = (-sim_term).mean().item()
+        self.bias_mpcbml_total = (-bias_term).mean().item()
+        self.prior_bias_total = prior_bias.mean().item()
+        self.weight_bias_total = weight_bias.mean().item()
+        self.mpcbml_total = mpcbml_loss.item()
 
-    # =====================================================
-    # 8. FINAL LOSS
-    # =====================================================
-    return mpcbml_loss
+        # =====================================================
+        # 8. FINAL LOSS
+        # =====================================================
+        return mpcbml_loss
