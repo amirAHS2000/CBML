@@ -134,9 +134,9 @@ def do_train(
                 prior_bias = getattr(criterion, 'prior_bias_total', 0.0) or 0.0
                 weight_bias = getattr(criterion, 'weight_bias_total', 0.0) or 0.0
                 
-                # MVC components
-                mvc_loss = getattr(criterion, 'current_mvc_value', 0.0) or 0.0
-                mvc_contrib = getattr(criterion, 'current_mvc_contribution', 0.0) or 0.0
+                # Regularization term components
+                mvc_loss = getattr(criterion, 'current_reg_value', 0.0) or 0.0
+                mvc_contrib = getattr(criterion, 'current_reg_contribution', 0.0) or 0.0
                 pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
                 neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
                 xi_val = getattr(criterion, 'current_xi', 0.0) or 0.0

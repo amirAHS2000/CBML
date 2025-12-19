@@ -13,13 +13,18 @@ class MpcbmlLoss(nn.Module):
 
         self.device_name = getattr(cfg.MODEL, 'DEVICE', 'cuda')
         self.device = torch.device(self.device_name)
-
         self.embed_dim = getattr(cfg.MODEL.HEAD, 'DIM', 512)
-
         self.num_classes = getattr(cfg.LOSSES.MPCBML_LOSS, 'N_CLASSES', 100)
 
+        self.ma_momentum = getattr(cfg.LOSSES.MPCBML_LOSS, 'MA_MOMENTUM', 0.99)
         self.gamma_reg = getattr(cfg.LOSSES.MPCBML_LOSS, 'GAMMA_REG', 0.2)
-        self.lambda_reg = getattr(cfg.LOSSES.MPCBML_LOSS, 'LAMBDA_REG', 10.0)
+        self.lambda_reg = getattr(cfg.LOSSES.MPCBML_LOSS, 'LAMBDA_REG', 0.5)
+        # Use register_buffer so these are part of state_dict but do not get gradients
+        self.register_buffer('global_s_pos', torch.tensor(0.5))
+        self.register_buffer('global_s_neg', torch.tensor(0.0))
+        # Flag to initialize on first batch
+        self.is_initialized = False
+
 
         theta_is_learnable = getattr(cfg.LOSSES.MPCBML_LOSS, 'THETA_IS_LEARNABLE', False)
         init_theta = getattr(cfg.LOSSES.MPCBML_LOSS, 'INIT_THETA', 1.0)        
@@ -84,6 +89,22 @@ class MpcbmlLoss(nn.Module):
         
         # Beta tracking
         self.current_beta = 1.0
+
+    def update_moving_averages(self, current_pos_mean, current_neg_mean):
+        """
+        Update the global estimates using Exponential Moving Average (EMA).
+        No gradients flow through this update.
+        """
+        with torch.no_grad():
+            if not self.is_initialized:
+                self.global_s_pos.fill_(current_pos_mean)
+                self.global_s_neg.fill_(current_neg_mean)
+                self.is_initialized = True
+            else:
+                self.global_s_pos = (self.ma_momentum * self.global_s_pos +
+                                     (1 - self.ma_momentum) * current_pos_mean)
+                self.global_s_neg = (self.ma_momentum * self.global_s_neg +
+                                     (1 - self.ma_momentum) * current_neg_mean)
 
     # This function is called at the begining (before training starts)
     @torch.no_grad()
@@ -313,7 +334,36 @@ class MpcbmlLoss(nn.Module):
         self.mpcbml_total = mpcbml_loss.item()
 
         # -----------------------------------------------------
-        # 8. FINAL LOSS
+        # 8. REGULARIZATION LOGIC
         # -----------------------------------------------------
-        return mpcbml_loss
+        # 1. Compute batch means (detach to stop gradient flow into the MA update)
+        batch_pos_mean = pos_sim.detach().mean()
+        batch_neg_mean = best_neg_sim.detach().mean()
+
+        # 2. Update Global Moving Averages
+        if self.training:
+            self.update_moving_averages(batch_pos_mean, batch_neg_mean)
+
+        # 3. Compute Threshold (xi)
+        # xi is a constant regarding gradients, it's a "target" derived from history
+        xi = (self.gamma_reg * self.global_s_pos + 
+              (1 - self.gamma_reg) * self.global_s_neg)
+        
+        reg_loss = F.relu(xi - best_neg_sim).mean() 
+
+        # 5. Add to Total Loss
+        total_loss = mpcbml_loss + self.lambda_reg * reg_loss
+
+        # ==========================================
+        # LOGGING UPDATES
+        # ==========================================
+        self.current_reg_value = reg_loss.item()
+        self.current_xi = xi.item()
+        self.current_positive_mean = self.global_s_pos.item()
+        self.current_negative_mean = self.global_s_neg.item()
+
+        # -----------------------------------------------------
+        # 9. FINAL LOSS
+        # -----------------------------------------------------
+        return total_loss
 
