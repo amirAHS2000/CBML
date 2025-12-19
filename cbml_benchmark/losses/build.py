@@ -14,7 +14,7 @@ from .cluster_loss import ClusterLoss, ClusterLoss_local
 from .histogram_loss import HistogramLoss
 from .center_loss import CenterLoss
 from .advloss import AdvLoss
-from .mp_cbml_loss import MpcbmlLoss
+from .mpcbml_loss import MpcbmlLoss
 from .registry import LOSS
 
 
