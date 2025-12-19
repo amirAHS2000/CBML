@@ -349,7 +349,7 @@ class MpcbmlLoss(nn.Module):
         xi = (self.gamma_reg * self.global_s_pos + 
               (1 - self.gamma_reg) * self.global_s_neg)
         
-        reg_loss = F.relu(xi - best_neg_sim).mean() 
+        reg_loss = F.relu(best_neg_sim - xi).mean() 
 
         # 5. Add to Total Loss
         total_loss = mpcbml_loss + self.lambda_reg * reg_loss
