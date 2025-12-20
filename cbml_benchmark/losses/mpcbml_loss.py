@@ -54,9 +54,9 @@ class MpcbmlLoss(nn.Module):
         )
 
         # Class priors [C]
-        self.class_priors = nn.Parameter(
-            torch.tensor(cfg.LOSSES.MPCBML_LOSS.CLASS_PRIORS, device=self.device),
-            requires_grad=False
+        self.register_buffer('class_priors', 
+            torch.tensor(getattr(cfg.LOSSES.MPCBML_LOSS, 'CLASS_PRIORS', 
+                                 [1.0/self.num_classes]*self.num_classes))
         )
 
         # ==========================================
@@ -90,21 +90,14 @@ class MpcbmlLoss(nn.Module):
         # Beta tracking
         self.current_beta = 1.0
 
-    def update_moving_averages(self, current_pos_mean, current_neg_mean):
-        """
-        Update the global estimates using Exponential Moving Average (EMA).
-        No gradients flow through this update.
-        """
-        with torch.no_grad():
-            if not self.is_initialized:
-                self.global_s_pos.fill_(current_pos_mean)
-                self.global_s_neg.fill_(current_neg_mean)
-                self.is_initialized = True
-            else:
-                self.global_s_pos = (self.ma_momentum * self.global_s_pos +
-                                     (1 - self.ma_momentum) * current_pos_mean)
-                self.global_s_neg = (self.ma_momentum * self.global_s_neg +
-                                     (1 - self.ma_momentum) * current_neg_mean)
+    def update_moving_averages(self, batch_pos_mean, batch_neg_mean):
+        if not self.is_initialized:
+            self.global_s_pos.data.copy_(batch_pos_mean)
+            self.global_s_neg.data.copy_(batch_neg_mean)
+            self.is_initialized = True
+        else:
+            self.global_s_pos.mul_(self.ma_momentum).add_(batch_pos_mean * (1 - self.ma_momentum))
+            self.global_s_neg.mul_(self.ma_momentum).add_(batch_neg_mean * (1 - self.ma_momentum))
 
     # This function is called at the begining (before training starts)
     @torch.no_grad()
@@ -135,13 +128,13 @@ class MpcbmlLoss(nn.Module):
         """Enforce normalization constraints - Eq. 3, 33"""
         with torch.no_grad():
             # Normalize prototypes to unit norm (Eq. 3)
-            norms = self.prototypes.norm(p=2, dim=2, keepdim=True)
-            self.prototypes.div_(norms.clamp(min=1e-8))
+            # Normalize Prototypes
+            self.prototypes.div_(self.prototypes.norm(p=2, dim=2, keepdim=True).clamp(min=1e-8))
             
             # Ensure non-negativity for weights
             # Note: Sum constraint (Eq. 33) is preserved by mean-subtracted gradients (Eq. 41-43)
             # so we don't need explicit normalization here
-            self.weights.clamp_(min=0.0)
+            self.weights.clamp_(min=1e-6)
 
     def show_prototype_stats(self, initial_prototypes=None):
         if initial_prototypes is None and hasattr(self, "initial_prototypes"):
@@ -172,198 +165,99 @@ class MpcbmlLoss(nn.Module):
         # Compute mean gradient per class
         mean_grad = grad_w.mean(dim=1, keepdim=True)  # [C, 1]
         
-        # Compute mean-subtracted gradient
-        grad_tilde = grad_w - mean_grad  # [C, K]
-        
-        # Replace gradients with mean-subtracted version
-        self.weights.grad.copy_(grad_tilde)
+        grad_w.sub_(mean_grad)
 
     def forward(self, embeddings, targets):
-        # Enforce unit-norm prototypes
+        # 1. Enforce constraints immediately to ensure valid probabilities
         self._enforce_constraints()
-
+        
         embeddings = embeddings.to(self.device)
         targets = targets.to(self.device)
-
-        B = embeddings.size(0)
-        C, K, D = self.num_classes, self.prototype_per_class, self.embed_dim
+        
+        # 2. Setup
+        # Use functional normalize for embeddings (cleaner for gradients)
+        z = F.normalize(embeddings, p=2, dim=1)           # [B, D]
+        # We can use self.prototypes directly as they were normalized in _enforce_constraints
+        
+        B = z.shape[0]
+        C, K = self.num_classes, self.prototype_per_class
+        beta = torch.exp(self.theta)
         eps = 1e-9
 
         # -----------------------------------------------------
-        # 0. Normalize embeddings
+        # 3. Compute Log-Contributions
         # -----------------------------------------------------
-        z = F.normalize(embeddings, p=2, dim=1)  # [B, D]
-        protos = self.prototypes                  # [C, K, D]
-        W = self.weights                          # [C, K]
-
-        # Get current beta
-        beta = torch.exp(self.theta)
-        self.current_beta = beta.item()
-
-        # -----------------------------------------------------
-        # 1. Compute similarities
-        # -----------------------------------------------------
-        # sims[b, c, k] = z_b · μ_{c,k}
-        sims = torch.matmul(z, protos.view(C * K, D).t()).view(B, C, K)  # [B, C, K]
-
-        # -----------------------------------------------------
-        # 2. Log-probability contribution for each prototype
-        #    log p(z | c,k) ∝ log w_{c,k} + β * s_{b,c,k}
-        # -----------------------------------------------------
-        log_prob_contrib = torch.log(W.unsqueeze(0) + eps) + beta * sims  # [B, C, K]
-
-        # -----------------------------------------------------
-        # 3. Masks
-        # -----------------------------------------------------
-        y_onehot = F.one_hot(targets, num_classes=C).bool()  # [B, C]
-        neg_mask = ~y_onehot                                 # [B, C]
-
-        # -----------------------------------------------------
-        # 4. POSITIVE SELECTION (dominant positive prototype)
-        #    ℓ_i^+ = argmax_ℓ [log w_{y_i,ℓ} + β s_{i,y_i,ℓ}]
-        # -----------------------------------------------------
-        pos_log_contrib = log_prob_contrib[y_onehot].view(B, K)  # [B, K]
-        pos_raw = sims[y_onehot].view(B, K)                      # [B, K]
-        pos_w = W[targets]                                       # [B, K]
-        prior_pos = self.class_priors[targets]                   # [B]
-
-        best_pos_idx = pos_log_contrib.argmax(dim=-1)            # [B]
-        pos_sim = pos_raw[torch.arange(B, device=self.device), best_pos_idx]  # [B]
-        w_pos = pos_w[torch.arange(B, device=self.device), best_pos_idx]      # [B]
-
-        # -----------------------------------------------------
-        # 5. NEGATIVE SELECTION (dominant negative prototype)
-        #    1) best prototype per negative class:
-        #       ℓ_i^{(c)} = argmax_ℓ [log w_{c,ℓ} + β s_{i,c,ℓ}]
-        #    2) dominant negative class:
-        #       c_i^- = argmax_c [log p(c) + log w_{c,ℓ*} + β s_{i,c,ℓ*}]
-        # -----------------------------------------------------
-        # Extract negative entries: shapes [B, C-1, K]
-        neg_log_contrib = log_prob_contrib[neg_mask].view(B, C - 1, K)  # [B, C-1, K]
-        neg_raw = sims[neg_mask].view(B, C - 1, K)                      # [B, C-1, K]
-
-        # Expand weights to [B, C, K] and then mask to negatives: [B, C-1, K]
-        W_expanded = W.unsqueeze(0).expand(B, C, K)                      # [B, C, K]
-        neg_W = W_expanded[neg_mask].view(B, C - 1, K)                   # [B, C-1, K]
-
-        # Negative class priors: [B, C-1]
-        class_priors_exp = self.class_priors.unsqueeze(0).expand(B, C)   # [B, C]
-        neg_priors = class_priors_exp[neg_mask].view(B, C - 1)           # [B, C-1]
-
-        # Step 1: best prototype per negative class (by log_prob_contrib)
-        best_neg_log_contrib, best_neg_k = neg_log_contrib.max(dim=-1)   # [B, C-1]
-
-        # Step 2: score each negative class at its best prototype
-        # Build batched indices [B, C-1] for advanced indexing
-        b_idx_full = torch.arange(B, device=self.device).unsqueeze(1).expand(-1, C - 1)      # [B, C-1]
-        c_idx_full = torch.arange(C - 1, device=self.device).unsqueeze(0).expand(B, -1)      # [B, C-1]
-
-        # log w_{c,ℓ*} and s_{i,c,ℓ*} at best prototype per neg class
-        best_neg_log_w = torch.log(
-            neg_W[b_idx_full, c_idx_full, best_neg_k] + eps
-        )  # [B, C-1]
-
-        best_neg_raw_sim = neg_raw[b_idx_full, c_idx_full, best_neg_k]   # [B, C-1]
-
-        # Score for each negative class:
-        # log p(c) + log w_{c,ℓ*} + β s_{i,c,ℓ*}
-        neg_class_scores = (
-            torch.log(neg_priors + eps) + best_neg_log_w + beta * best_neg_raw_sim
-        )  # [B, C-1]
-
-        # Dominant negative class index (in compressed negative-class axis)
-        best_neg_class = neg_class_scores.argmax(dim=-1)  # [B]
-
-        # Now extract the final dominant negative prototype for each sample
-        b_idx = torch.arange(B, device=self.device)  # [B]
-
-        best_neg_sim = neg_raw[
-            b_idx, best_neg_class, best_neg_k[b_idx, best_neg_class]
-        ]  # [B]
-        w_neg = neg_W[
-            b_idx, best_neg_class, best_neg_k[b_idx, best_neg_class]
-        ]  # [B]
-        prior_neg = neg_priors[b_idx, best_neg_class]  # [B]
-
-        # Log similarities for monitoring
-        self.current_pos_sim = pos_sim.mean().item()
-        self.current_neg_sim = best_neg_sim.mean().item()
-        self.current_sim_margin = (pos_sim - best_neg_sim).mean().item()
-
-        # -----------------------------------------------------
-        # 6. BAYESIAN LOSS: -log p(c+ | z_i)
-        # -----------------------------------------------------
-        log_A_pos = (
-            torch.log(prior_pos + eps) +
-            torch.log(w_pos + eps) +
-            beta * pos_sim
-        )  # [B]
-
-        log_A_neg = (
-            torch.log(prior_neg + eps) +
-            torch.log(w_neg + eps) +
-            beta * best_neg_sim
-        )  # [B]
-
-        # log(A+ + A-) in a numerically stable way
-        log_denominator = torch.logsumexp(
-            torch.stack([log_A_pos, log_A_neg], dim=0), dim=0
-        )  # [B]
-
-        # Per-sample loss: -log A+ + log(A+ + A-)
-        mpcbml_loss = (-log_A_pos + log_denominator).mean()  # scalar
-
-        # -----------------------------------------------------
-        # 7. COMPONENT LOGGING (for debugging)
-        # -----------------------------------------------------
-        sim_term = beta * (pos_sim - best_neg_sim)  # [B]
-
-        log_prior_pos = torch.log(prior_pos + eps)
-        log_prior_neg = torch.log(prior_neg + eps)
-        log_w_pos = torch.log(w_pos + eps)
-        log_w_neg = torch.log(w_neg + eps)
-
-        prior_bias = log_prior_pos - log_prior_neg  # [B]
-        weight_bias = log_w_pos - log_w_neg         # [B]
-        bias_term = prior_bias + weight_bias        # [B]
-
-        self.sim_mpcbml_total = (-sim_term).mean().item()
-        self.bias_mpcbml_total = (-bias_term).mean().item()
-        self.prior_bias_total = prior_bias.mean().item()
-        self.weight_bias_total = weight_bias.mean().item()
-        self.mpcbml_total = mpcbml_loss.item()
-
-        # -----------------------------------------------------
-        # 8. REGULARIZATION LOGIC
-        # -----------------------------------------------------
-        # 1. Compute batch means (detach to stop gradient flow into the MA update)
-        batch_pos_mean = pos_sim.detach().mean()
-        batch_neg_mean = best_neg_sim.detach().mean()
-
-        # 2. Update Global Moving Averages
-        if self.training:
-            self.update_moving_averages(batch_pos_mean, batch_neg_mean)
-
-        # 3. Compute Threshold (xi)
-        # xi is a constant regarding gradients, it's a "target" derived from history
-        xi = (self.gamma_reg * self.global_s_pos + 
-              (1 - self.gamma_reg) * self.global_s_neg)
+        # Flatten protos for one big matmul: [C*K, D]
+        flat_protos = self.prototypes.view(C * K, -1)
         
-        reg_loss = F.relu(best_neg_sim - xi).mean() 
+        # Similarity: [B, C, K]
+        sims = torch.matmul(z, flat_protos.t()).view(B, C, K)
 
-        # 5. Add to Total Loss
-        total_loss = mpcbml_loss + self.lambda_reg * reg_loss
-
-        # ==========================================
-        # LOGGING UPDATES
-        # ==========================================
-        self.current_reg_value = reg_loss.item()
-        self.current_xi = xi.item()
-        self.current_positive_mean = self.global_s_pos.item()
-        self.current_negative_mean = self.global_s_neg.item()
+        # Log terms: log p(c) + log w + beta*s
+        # Expand dims for broadcasting: [1, C, 1] and [1, C, K]
+        log_prior = torch.log(self.class_priors + eps).view(1, C, 1)
+        log_weight = torch.log(self.weights + eps).unsqueeze(0)
+        
+        # r_score: [B, C, K]
+        r_scores = log_prior + log_weight + (beta * sims)
 
         # -----------------------------------------------------
-        # 9. FINAL LOSS
+        # 4. Mining Dominant Components
         # -----------------------------------------------------
+        target_mask = F.one_hot(targets, num_classes=C).bool() # [B, C]
+        
+        # --- Positive ---
+        # Get scores for true class [B, K]
+        pos_scores = r_scores[target_mask].view(B, K)
+        # Dominant positive prototype index
+        r_pos, best_pos_k = pos_scores.max(dim=1) # [B]
+        
+        # Extract raw similarity for regularization (s_pos)
+        # We need to grab the specific sim value corresponding to best_pos_k
+        pos_sims = sims[target_mask].view(B, K)
+        s_pos = pos_sims.gather(1, best_pos_k.unsqueeze(1)).squeeze(1) # [B]
+
+        # --- Negative ---
+        # 1. Best prototype per class (max over K) -> [B, C]
+        r_best_k_val, best_k_idx = r_scores.max(dim=2)
+        s_best_k_val = sims.gather(2, best_k_idx.unsqueeze(2)).squeeze(2)
+
+        # 2. Mask positive class to -inf so it isn't selected as negative
+        r_neg_candidates = r_best_k_val.clone()
+        r_neg_candidates[target_mask] = -float('inf')
+
+        # 3. Dominant Negative Class (max over C)
+        r_neg, best_neg_c = r_neg_candidates.max(dim=1) # [B]
+        
+        # Extract raw similarity for regularization (s_neg)
+        s_neg = s_best_k_val.gather(1, best_neg_c.unsqueeze(1)).squeeze(1) # [B]
+
+        # -----------------------------------------------------
+        # 5. Loss & Regularization
+        # -----------------------------------------------------
+        # MP-CBML Loss: Softplus(r_neg - r_pos)
+        loss_main = F.softplus(r_neg - r_pos).mean()
+
+        # Update stats (detached)
+        if self.training:
+            self.update_moving_averages(s_pos.detach().mean(), s_neg.detach().mean())
+
+        # Regularization
+        # xi is treated as a constant target (stop gradient implied by using buffer values)
+        xi = (self.alpha * self.global_s_pos) + ((1 - self.alpha) * self.global_s_neg)
+        
+        # Reg Loss: max(0, s_neg - xi)
+        loss_reg = F.relu(s_neg - xi).mean()
+
+        total_loss = loss_main + (self.reg_weight * loss_reg)
+
+        # -----------------------------------------------------
+        # 6. Logging Helpers
+        # -----------------------------------------------------
+        with torch.no_grad():
+            self.current_beta = beta.item()
+            self.current_pos_sim = s_pos.mean().item()
+            self.current_neg_sim = s_neg.mean().item()
+            self.current_xi = xi.item()
+
         return total_loss
-
