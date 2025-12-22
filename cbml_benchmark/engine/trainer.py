@@ -26,6 +26,38 @@ def update_ema_variables(model, ema_model):
         # Update EMA parameters: new_ema = alpha * old_ema + (1 - alpha) * current_param
         ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
 
+def log_statistics_to_csv(stats, csv_path, iteration, header_written):
+    """
+    Log statistics dictionary to CSV file.
+
+    Args:
+        stats: dict from criterion.get_last_stats()
+        csv_path: path to CSV file
+        iteration: current iteration
+        header_written: bool flag
+
+    Returns:
+        bool: updated header_written
+    """
+    if stats is None:
+        return header_written
+
+    # Make sure output dir exists
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+
+    fieldnames = ['iteration'] + list(stats.keys())
+
+    if not header_written:
+        with open(csv_path, mode='w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+        header_written = True
+
+    with open(csv_path, mode='a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writerow({'iteration': iteration, **stats})
+
+    return header_written
 
 def do_train(
         cfg,               # Configuration object with training settings.
@@ -67,7 +99,6 @@ def do_train(
     # define log file
     stats_log_path = os.path.join('outputs', 'statistics_log.csv')
     os.makedirs('outputs', exist_ok=True)
-
     # flag to track if header has been written
     header_written = os.path.exists(stats_log_path)
 
@@ -100,123 +131,27 @@ def do_train(
             # MP-CBML ENHANCED STATISTICS LOGGING
             # ================================================================
             if cfg.LOSSES.NAME == 'mpcbml_loss':
-                plot_dir = os.path.join('outputs', 'dist_plots')
-                os.makedirs(plot_dir, exist_ok=True)
-
-                logger.info('Computing Similarity Distributions...')
-
-                # training set distribution (overfitting check)
-                # use eval_train_loader (no augmentation) to get clean stats
-                train_pos, train_neg = compute_similarity_stats(model, criterion, eval_train_loader, device)
-                plot_distribution_figure(
-                    train_pos, train_neg,
-                    title=f'Train Distribution (Iter {iteration})',
-                    save_path=os.path.join(plot_dir, f'train_dist_{iteration:06d}.png')
+                stats = criterion.get_last_stats()
+                header_written = log_statistics_to_csv(
+                    stats,
+                    stats_log_path,
+                    iteration,
+                    header_written
                 )
 
-                # Weight sum verification (should all be ~1.0)
-                weight_sums = criterion.weights.sum(dim=1)
-                logger.info(f'Weight sum check - min: {weight_sums.min():.6f}, '
-                            f'max: {weight_sums.max():.6f}, '
-                            f'mean: {weight_sums.mean():.6f}')
-                
-                # Extract prototype and weight statistics
-                proto_stats = criterion.show_prototype_stats()
-                weight_stats = criterion.show_weight_stats()
-                
-                # Core loss components
-                total_loss = getattr(criterion, 'current_total_loss', 0.0) or 0.0
-                mpcbml_loss = getattr(criterion, 'mpcbml_total', 0.0) or 0.0
-                sim_term = getattr(criterion, 'sim_mpcbml_total', 0.0) or 0.0
-                bias_term = getattr(criterion, 'bias_mpcbml_total', 0.0) or 0.0
-                
-                # Bias breakdown
-                prior_bias = getattr(criterion, 'prior_bias_total', 0.0) or 0.0
-                weight_bias = getattr(criterion, 'weight_bias_total', 0.0) or 0.0
-                
-                # Regularization term components
-                mvc_loss = getattr(criterion, 'current_reg_value', 0.0) or 0.0
-                mvc_contrib = getattr(criterion, 'current_reg_contribution', 0.0) or 0.0
-                pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
-                neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
-                xi_val = getattr(criterion, 'current_xi', 0.0) or 0.0
-                
-                # Selected similarities
-                pos_sim = getattr(criterion, 'current_pos_sim', 0.0) or 0.0
-                neg_sim = getattr(criterion, 'current_neg_sim', 0.0) or 0.0
-                sim_margin = getattr(criterion, 'current_sim_margin', 0.0) or 0.0
-                
-                # Beta parameter (NEW - replaces log_weight stats)
-                current_beta = getattr(criterion, 'current_beta', 1.0)
-                
-                # Weight entropy
-                weight_entropy_stats = criterion.show_weight_entropy()
-                mean_entropy = weight_entropy_stats['mean_entropy']
-                
-                # Weight sum statistics (NEW - to monitor constraint preservation)
-                weight_sum_min = weight_sums.min().item()
-                weight_sum_max = weight_sums.max().item()
-                weight_sum_std = weight_sums.std().item()
-                
-                # Write header if this is the first time
-                if not header_written:
-                    with open(stats_log_path, mode='w', newline='') as f:
-                        writer = csv.writer(f)
-                        writer.writerow([
-                            # Iteration & loss components
-                            'iteration', 'total_loss', 'mpcbml_loss', 'sim_term', 'bias_term',
-                            'prior_bias', 'weight_bias',
-                            # MVC components
-                            'mvc_loss', 'mvc_contribution', 'pos_mean', 'neg_mean', 'xi',
-                            # Selected similarities
-                            'pos_sim', 'neg_sim', 'sim_margin',
-                            # Prototype statistics
-                            'mean_intra_dist', 'mean_inter_dist', 'mean_displacement',
-                            # Weight statistics
-                            'mean_entropy', 'mean_max_weight',
-                            # Beta parameter (temperature)
-                            'beta',
-                            # Weight sum verification (constraint check)
-                            'weight_sum_min', 'weight_sum_max', 'weight_sum_std'
-                        ])
-                        header_written = True
-                
-                # Append data
-                with open(stats_log_path, mode='a', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerow([
-                        # Iteration & loss components
-                        iteration,
-                        round(total_loss, 8),
-                        round(mpcbml_loss, 8),
-                        round(sim_term, 8),
-                        round(bias_term, 8),
-                        round(prior_bias, 8),
-                        round(weight_bias, 8),
-                        # MVC components
-                        round(mvc_loss, 8),
-                        round(mvc_contrib, 8),
-                        round(pos_mean, 8),
-                        round(neg_mean, 8),
-                        round(xi_val, 8),
-                        # Selected similarities
-                        round(pos_sim, 8),
-                        round(neg_sim, 8),
-                        round(sim_margin, 8),
-                        # Prototype statistics
-                        round(proto_stats['mean_intra_dist'], 5),
-                        round(proto_stats['mean_inter_dist'], 5),
-                        round(proto_stats['mean_displacement'], 5),
-                        # Weight statistics
-                        round(mean_entropy, 5),
-                        round(weight_stats['mean_max_weight'], 5),
-                        # Beta parameter
-                        round(current_beta, 5),
-                        # Weight sum verification
-                        round(weight_sum_min, 6),
-                        round(weight_sum_max, 6),
-                        round(weight_sum_std, 6)
-                    ])
+                # plot_dir = os.path.join('outputs', 'dist_plots')
+                # os.makedirs(plot_dir, exist_ok=True)
+
+                # logger.info('Computing Similarity Distributions...')
+
+                # # training set distribution (overfitting check)
+                # # use eval_train_loader (no augmentation) to get clean stats
+                # train_pos, train_neg = compute_similarity_stats(model, criterion, eval_train_loader, device)
+                # plot_distribution_figure(
+                #     train_pos, train_neg,
+                #     title=f'Train Distribution (Iter {iteration})',
+                #     save_path=os.path.join(plot_dir, f'train_dist_{iteration:06d}.png')
+                # )
 
             elif cfg.LOSSES.NAME == 'cbml_loss':
                 # Get all logged values

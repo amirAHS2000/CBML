@@ -1,11 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-
 from cbml_benchmark.losses.registry import LOSS
-from cbml_benchmark.utils.prototype_weight_monitor import compute_proto_stats, compute_weight_stats
-
+from cbml_benchmark.utils.mpcbml_logger import compute_statistics
 
 
 @LOSS.register('mpcbml_loss')
@@ -13,12 +10,10 @@ class MpcbmlLoss(nn.Module):
     def __init__(self, cfg):
         super(MpcbmlLoss, self).__init__()
 
-
         self.device_name = getattr(cfg.MODEL, 'DEVICE', 'cuda')
         self.device = torch.device(self.device_name)
         self.embed_dim = getattr(cfg.MODEL.HEAD, 'DIM', 512)
         self.num_classes = getattr(cfg.LOSSES.MPCBML_LOSS, 'N_CLASSES', 100)
-
 
         self.ma_momentum = getattr(cfg.LOSSES.MPCBML_LOSS, 'MA_MOMENTUM', 0.99)
         self.gamma_reg = getattr(cfg.LOSSES.MPCBML_LOSS, 'GAMMA_REG', 0.2)
@@ -28,8 +23,6 @@ class MpcbmlLoss(nn.Module):
         self.register_buffer('global_s_neg', torch.tensor(0.0, device=self.device))
         # Flag to initialize on first batch
         self.is_initialized = False
-
-
 
         theta_is_learnable = getattr(cfg.LOSSES.MPCBML_LOSS, 'THETA_IS_LEARNABLE', False)
         init_theta = getattr(cfg.LOSSES.MPCBML_LOSS, 'INIT_THETA', 1.0)        
@@ -58,46 +51,14 @@ class MpcbmlLoss(nn.Module):
             requires_grad=True
         )
 
-
         # Class priors [C]
         priors_list = getattr(cfg.LOSSES.MPCBML_LOSS, 'CLASS_PRIORS', [1.0/self.num_classes]*self.num_classes)
         self.register_buffer('class_priors',
             torch.tensor(priors_list, device=self.device)
         )
 
-
-        # ==========================================
-        # LOGGING VARIABLES
-        # ==========================================        
-
-
-        # Core loss components
-        self.mpcbml_total = 0.0
-        self.sim_mpcbml_total = 0.0
-        self.bias_mpcbml_total = 0.0
-       
-        # Bias term breakdown
-        self.prior_bias_total = 0.0
-        self.weight_bias_total = 0.0
-       
-        # Regularization term components
-        self.current_reg_value = 0.0
-        self.current_positive_mean = 0.0
-        self.current_negative_mean = 0.0
-        self.current_xi = 0.0
-       
-        # Selected similarities
-        self.current_pos_sim = 0.0
-        self.current_neg_sim = 0.0
-        self.current_sim_margin = 0.0
-       
-        # Total loss
-        self.current_total_loss = 0.0
-        self.current_reg_contribution = 0.0
-       
-        # Beta tracking
-        self.current_beta = 1.0
-
+        # Store computed statistics for external access
+        self.last_stats = None
 
     def update_moving_averages(self, batch_pos_mean, batch_neg_mean):
         if not self.is_initialized:
@@ -108,7 +69,6 @@ class MpcbmlLoss(nn.Module):
             self.global_s_pos.mul_(self.ma_momentum).add_(batch_pos_mean * (1 - self.ma_momentum))
             self.global_s_neg.mul_(self.ma_momentum).add_(batch_neg_mean * (1 - self.ma_momentum))
 
-
     # This function is called at the begining (before training starts)
     @torch.no_grad()
     def set_prototypes_and_weights(self, prototypes, cluster_sizes):
@@ -116,15 +76,11 @@ class MpcbmlLoss(nn.Module):
         Set prototypes based on K-means on the training set.
         Set weights based on size of each cluster.
         """
-
-
         prototypes = prototypes.to(self.device)
         self.prototypes.copy_(prototypes)
 
-
         # Save a frozen copy of the initial prototypes for monitoring
         self.initial_prototypes = prototypes.detach().clone()
-
 
         if cluster_sizes is not None and \
             cluster_sizes.shape == (self.num_classes, self.prototype_per_class):
@@ -137,7 +93,6 @@ class MpcbmlLoss(nn.Module):
            
         torch.cuda.empty_cache()
 
-
     def _enforce_constraints(self):
         """Enforce normalization constraints - Eq. 3, 33"""
         with torch.no_grad():
@@ -148,28 +103,7 @@ class MpcbmlLoss(nn.Module):
             # Ensure non-negativity for weights
             # Note: Sum constraint (Eq. 33) is preserved by mean-subtracted gradients (Eq. 41-43)
             # so we don't need explicit normalization here
-            self.weights.clamp_(min=1e-6)
-
-
-    def show_prototype_stats(self, initial_prototypes=None):
-        if initial_prototypes is None and hasattr(self, "initial_prototypes"):
-            initial_prototypes = self.initial_prototypes
-        return compute_proto_stats(self.prototypes.detach(), initial_prototypes)
-       
-    def show_weight_stats(self):
-        return compute_weight_stats(self.weights.detach())
-   
-    def show_weight_entropy(self):
-        """Compute entropy of weight distribution per class."""
-        W = self.weights.detach()  # [C, K]
-        entropy = -(W * torch.log(W + 1e-9)).sum(dim=1)  # [C]
-        return {
-            'mean_entropy': entropy.mean().item(),
-            'min_entropy': entropy.min().item(),
-            'max_entropy': entropy.max().item(),
-            'std_entropy': entropy.std().item()
-        }
-
+            # self.weights.clamp_(min=1e-6)
 
     def constrained_weight_update(self):
         if self.weights.grad is None:
@@ -183,12 +117,10 @@ class MpcbmlLoss(nn.Module):
        
         grad_w.sub_(mean_grad)
 
-
     def forward(self, embeddings, targets):
         if embeddings.device != self.prototypes.device:
             embeddings = embeddings.to(self.device)
             targets = targets.to(self.device)
-
 
         # 1. Enforce constraints immediately to ensure valid probabilities
         self._enforce_constraints()
@@ -203,7 +135,6 @@ class MpcbmlLoss(nn.Module):
         beta = torch.exp(self.theta)
         eps = 1e-9
 
-
         # -----------------------------------------------------
         # 3. Compute Log-Contributions
         # -----------------------------------------------------
@@ -213,7 +144,6 @@ class MpcbmlLoss(nn.Module):
         # Similarity: [B, C, K]
         sims = torch.matmul(z, flat_protos.t()).view(B, C, K)
 
-
         # Log terms: log p(c) + log w + beta*s
         # Expand dims for broadcasting: [1, C, 1] and [1, C, K]
         log_prior = torch.log(self.class_priors + eps).view(1, C, 1)
@@ -221,7 +151,6 @@ class MpcbmlLoss(nn.Module):
        
         # r_score: [B, C, K]
         r_scores = log_prior + log_weight + (beta * sims)
-
 
         # -----------------------------------------------------
         # 4. Mining Dominant Components
@@ -239,17 +168,14 @@ class MpcbmlLoss(nn.Module):
         pos_sims = sims[target_mask].view(B, K)
         s_pos = pos_sims.gather(1, best_pos_k.unsqueeze(1)).squeeze(1) # [B]
 
-
         # --- Negative ---
         # 1. Best prototype per class (max over K) -> [B, C]
         r_best_k_val, best_k_idx = r_scores.max(dim=2)
         s_best_k_val = sims.gather(2, best_k_idx.unsqueeze(2)).squeeze(2)
 
-
         # 2. Mask positive class to -inf so it isn't selected as negative
         r_neg_candidates = r_best_k_val.clone()
         r_neg_candidates[target_mask] = -float('inf')
-
 
         # 3. Dominant Negative Class (max over C)
         r_neg, best_neg_c = r_neg_candidates.max(dim=1) # [B]
@@ -276,14 +202,38 @@ class MpcbmlLoss(nn.Module):
 
         total_loss = loss_main + (self.lambda_reg * loss_reg)
 
-        # -----------------------------------------------------
-        # 6. Logging Helpers
-        # -----------------------------------------------------
-        with torch.no_grad():
-            self.current_beta = beta.item()
-            self.current_pos_sim = s_pos.mean().item()
-            self.current_neg_sim = s_neg.mean().item()
-            self.current_xi = xi.item()
-
+        # Compute statistics via standalone utility
+        self.last_stats = compute_statistics(
+            embeddings=embeddings,
+            targets=targets,
+            z=z,
+            sims=sims,
+            r_scores=r_scores,
+            r_pos=r_pos,
+            r_neg=r_neg,
+            s_pos=s_pos,
+            s_neg=s_neg,
+            beta=beta,
+            xi=xi,
+            loss_main=loss_main,
+            loss_reg=loss_reg,
+            gamma_reg=self.gamma_reg,
+            global_s_pos=self.global_s_pos,
+            global_s_neg=self.global_s_neg,
+            theta=self.theta,
+            prototypes=self.prototypes,
+            weights=self.weights,
+            device=self.device,
+            initial_prototypes=getattr(self, 'initial_prototypes', None),
+        )
 
         return total_loss
+    
+    def get_last_stats(self):
+        """
+        Retrieve the statistics computed during the last forward pass.
+
+        Returns:
+            dict: Statistics dictionary, or None if forward() hasn't been called yet
+        """
+        return self.last_stats
