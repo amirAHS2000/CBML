@@ -105,17 +105,16 @@ class MpcbmlLoss(nn.Module):
             # so we don't need explicit normalization here
             # self.weights.clamp_(min=1e-6)
 
-    def constrained_weight_update(self):
-        if self.weights.grad is None:
-            return
-       
-        # Get gradients [C, K]
-        grad_w = self.weights.grad
-       
-        # Compute mean gradient per class
-        mean_grad = grad_w.mean(dim=1, keepdim=True)  # [C, 1]
-       
-        grad_w.sub_(mean_grad)
+    def constrained_weight_update(self, w_old):
+        with torch.no_grad():
+            # compute actual update direction
+            delta = self.weights - w_old # [C, K]
+
+            # project delta onto tangent space (mean-subtract)
+            delta -= delta.mean(dim=1, keepdim=True)
+
+            # apply corrected update
+            self.weights.copy_(w_old + delta)
 
     def forward(self, embeddings, targets):
         if embeddings.device != self.prototypes.device:
@@ -198,7 +197,7 @@ class MpcbmlLoss(nn.Module):
         xi = (self.gamma_reg * self.global_s_pos) + ((1 - self.gamma_reg) * self.global_s_neg)
        
         # Reg Loss: max(0, s_neg - xi)
-        loss_reg = F.mse_loss(s_neg, xi)
+        loss_reg = F.relu(s_neg - xi).mean()
 
         total_loss = loss_main + (self.lambda_reg * loss_reg)
 

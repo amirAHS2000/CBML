@@ -259,12 +259,12 @@ def do_train(
         # Backward pass and optimization.
         optimizer.zero_grad()   # Clear previous gradients.
         loss.backward()         # Compute gradients.
-
-        # CRITICAL: Perform constrained weight update BEFORE optimizer.step()
         if cfg.LOSSES.NAME == 'mpcbml_loss':
-            criterion.constrained_weight_update()
-
-        optimizer.step()        # Update model parameters.
+            w_old = criterion.weights.clone()
+            optimizer.step()    # Update model parameters.
+            criterion.constrained_weight_update(w_old)
+        else:
+            optimizer.step()    # Update model parameters.
 
         # Measure batch processing time.
         batch_time = time.time() - end
