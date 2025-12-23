@@ -63,13 +63,23 @@ def train(cfg):
         logger.info("Prototype initialization complete.")
 
     loss_param = None
-    if cfg.LOSSES.NAME == 'softtriple_loss' or cfg.LOSSES.NAME == 'proxynca_loss' or cfg.LOSSES.NAME == 'center_loss' or cfg.LOSSES.NAME == 'adv_loss' or cfg.LOSSES.NAME == 'mpcbml_loss':
+    if cfg.LOSSES.NAME in ['softtriple_loss', 'proxynca_loss', 'center_loss', 'adv_loss']:
         loss_param = criterion
-    if cfg.LOSSES.NAME_AUX == 'softtriple_loss' or cfg.LOSSES.NAME_AUX == 'proxynca_loss' or cfg.LOSSES.NAME_AUX == 'center_loss' or cfg.LOSSES.NAME_AUX == 'adv_loss':
+    if cfg.LOSSES.NAME_AUX in ['softtriple_loss', 'proxynca_loss', 'center_loss', 'adv_loss']:
         loss_param = criterion_aux
 
-    optimizer = build_optimizer(cfg, model, loss_param=loss_param)
-    scheduler = build_lr_scheduler(cfg, optimizer)
+    optimizer_main, optimizer_weights = build_optimizer(
+        cfg,
+        model,
+        criterion=criterion,
+        loss_param=loss_param,
+    )
+
+    scheduler_main, scheduler_weights = build_lr_scheduler(
+        cfg,
+        optimizer_main,
+        optimizer_weights,
+    )
 
     train_loader = build_data(cfg, is_train=True)
     val_loader = build_data(cfg, is_train=False)
@@ -82,7 +92,7 @@ def train(cfg):
     arguments["iteration"] = 0
 
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD
-    checkpointer = Checkpointer(model, optimizer, scheduler, cfg.SAVE_DIR)
+    checkpointer = Checkpointer(model, optimizer_main, scheduler_main, cfg.SAVE_DIR)
 
     do_train(
         cfg,
@@ -90,8 +100,10 @@ def train(cfg):
         train_loader,
         val_loader,
         eval_train_loader,
-        optimizer,
-        scheduler,
+        optimizer_main,
+        optimizer_weights,
+        scheduler_main,
+        scheduler_weights,
         criterion,
         criterion_aux,
         checkpointer,

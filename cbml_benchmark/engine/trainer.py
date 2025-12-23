@@ -65,8 +65,10 @@ def do_train(
         train_loader,      # DataLoader for training data.
         val_loader,        # DataLoader for validation data.
         eval_train_loader, # DataLoader for training data (without any augmentationsa or transformations just for recalls calculation)
-        optimizer,         # Optimizer for updating model parameters.
-        scheduler,         # Learning rate scheduler.
+        optimizer_main,         # Optimizer for updating model parameters.
+        optimizer_weights,
+        scheduler_main,         # Learning rate scheduler.
+        scheduler_weights,
         criterion,         # Primary loss function.
         criterion_aux,     # Auxiliary loss function (if any).
         checkpointer,      # Object to save and load model checkpoints.
@@ -231,7 +233,9 @@ def do_train(
         arguments["iteration"] = iteration
 
         # Update learning rate scheduler.
-        scheduler.step()
+        scheduler_main.step()
+        if scheduler_weights is not None:
+            scheduler_weights.step()
 
         # Move data to the specified device.
         images = images.to(device)
@@ -257,14 +261,22 @@ def do_train(
             loss = criterion(feats, targets)
 
         # Backward pass and optimization.
-        optimizer.zero_grad()   # Clear previous gradients.
-        loss.backward()         # Compute gradients.
-        if cfg.LOSSES.NAME == 'mpcbml_loss':
-            w_old = criterion.weights.clone()
-            optimizer.step()    # Update model parameters.
-            criterion.constrained_weight_update(w_old)
+        optimizer_main.zero_grad()
+        if optimizer_weights is not None:
+            optimizer_weights.zero_grad()
+
+        loss.backward()
+
+        # If we have a separate weights optimizer (MP-CBML case)
+        if optimizer_weights is not None and cfg.LOSSES.NAME == 'mpcbml_loss':
+            # apply constrained gradient update before SGD step
+            if hasattr(criterion, 'constrained_weight_update'):
+                criterion.constrained_weight_update()
+            optimizer_main.step()
+            optimizer_weights.step()
         else:
-            optimizer.step()    # Update model parameters.
+            # single optimizer case
+            optimizer_main.step()
 
         # Measure batch processing time.
         batch_time = time.time() - end
@@ -290,7 +302,7 @@ def do_train(
                     eta=eta_string,
                     iter=iteration,
                     meters=str(meters),
-                    lr=optimizer.param_groups[0]["lr"],
+                    lr=optimizer_main.param_groups[0]["lr"],
                     memory=torch.cuda.max_memory_allocated() / 1024.0 / 1024.0 / 1024.0,
                 )
             )
