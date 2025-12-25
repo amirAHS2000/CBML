@@ -9,16 +9,22 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
         optimizer_weights: SGD for MP-CBML weights, or None otherwise
     """
     params = []
+    base_lr = cfg.SOLVER.BASE_LR
     
     # Add model parameters with lr multiplier
     for key, value in model.named_parameters():
         if not value.requires_grad:
             continue
+        # Backbone usally needs lower LR (finetuning)
         lr_mul = 0.1 if "backbone" in key else 1.0
-        params.append({"params": [value], "lr_mul": lr_mul})
-    
+        params.append({
+            'params': [value],
+            'lr_mul': lr_mul,
+            'lr': base_lr * lr_mul # explicitly set LR for PyTorch
+        })
+
     is_mpcbml = (cfg.LOSSES.NAME == 'mpcbml_loss')
-    
+   
     if is_mpcbml and criterion is not None:
         # MP-CBML: add all loss params except weights to Adam
         for name, param in criterion.named_parameters():
@@ -26,17 +32,34 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
                 continue
             if name == 'weights':
                 continue
-            params.append({"params": [param], "lr_mul": 1.0})
-    
+            
+            if 'prototypes' in name:
+                # Prototypes need to move fast to catch data clusters
+                current_lr_mul = 100.0
+            elif 'theta' in name:
+                current_lr_mul = 1.0
+            else:
+                current_lr_mul = 1.0
+            
+            params.append({
+                'params': [param],
+                'lr_mul': current_lr_mul,
+                'lr': base_lr * current_lr_mul
+            })
+
     elif loss_param is not None:
         # Other losses: add all loss parameters to Adam
         for p in loss_param.parameters():
-            params.append({"params": [p], "lr_mul": 1.0})
+            params.append({
+                'params': [p],
+                'lr_mul': 1.0,
+                'lr': base_lr * 1.0
+            })
     
     # Build optimizer - pass lr directly, let PyTorch handle lr_mul
     optimizer_main = getattr(torch.optim, cfg.SOLVER.OPTIMIZER_NAME)(
         params,
-        lr=cfg.SOLVER.BASE_LR,
+        lr=base_lr,
         weight_decay=cfg.SOLVER.WEIGHT_DECAY,
     )
     
@@ -51,7 +74,6 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
         )
     
     return optimizer_main, optimizer_weights
-
 
 def build_lr_scheduler(cfg, optimizer_main, optimizer_weights=None):
     scheduler_main = WarmupMultiStepLR(
