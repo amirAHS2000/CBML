@@ -16,10 +16,10 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
         if not value.requires_grad:
             continue
         # Backbone usally needs lower LR (finetuning)
-        lr_mul = 0.1 if "backbone" in key else 1.0
+        lr_mul = 1.0 if "backbone" in key else 1.0
         params.append({
             'params': [value],
-            'lr_mul': base_lr * lr_mul
+            'lr': base_lr * lr_mul
         })
 
     is_mpcbml = (cfg.LOSSES.NAME == 'mpcbml_loss')
