@@ -141,19 +141,19 @@ def do_train(
                     header_written
                 )
 
-                # plot_dir = os.path.join('outputs', 'dist_plots')
-                # os.makedirs(plot_dir, exist_ok=True)
+                plot_dir = os.path.join('outputs', 'dist_plots')
+                os.makedirs(plot_dir, exist_ok=True)
 
-                # logger.info('Computing Similarity Distributions...')
+                logger.info('Computing Similarity Distributions...')
 
-                # # training set distribution (overfitting check)
-                # # use eval_train_loader (no augmentation) to get clean stats
-                # train_pos, train_neg = compute_similarity_stats(model, criterion, eval_train_loader, device)
-                # plot_distribution_figure(
-                #     train_pos, train_neg,
-                #     title=f'Train Distribution (Iter {iteration})',
-                #     save_path=os.path.join(plot_dir, f'train_dist_{iteration:06d}.png')
-                # )
+                # training set distribution (overfitting check)
+                # use eval_train_loader (no augmentation) to get clean stats
+                train_pos, train_neg = compute_similarity_stats(model, criterion, eval_train_loader, device)
+                plot_distribution_figure(
+                    train_pos, train_neg,
+                    title=f'Train Distribution (Iter {iteration})',
+                    save_path=os.path.join(plot_dir, f'train_dist_{iteration:06d}.png')
+                )
 
             elif cfg.LOSSES.NAME == 'cbml_loss':
                 # Get all logged values
