@@ -161,7 +161,8 @@ class MpcbmlLoss(nn.Module):
         # Get scores for true class [B, K]
         pos_scores = r_scores[target_mask].view(B, K)
         # Dominant positive prototype index
-        r_pos, best_pos_k = pos_scores.max(dim=1) # [B]
+        r_pos = torch.logsumexp(pos_scores, dim=1)
+        _, best_pos_k = pos_scores.max(dim=1)
        
         # Extract raw similarity for regularization (s_pos)
         # We need to grab the specific sim value corresponding to best_pos_k
