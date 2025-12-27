@@ -30,7 +30,7 @@ LOSSES:
     GAMMA_REG: 0.2
     LAMBDA_REG: 0.1
     THETA_IS_LEARNABLE: False
-    INIT_THETA: 1.0
+    INIT_THETA: 3.0
     
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt
