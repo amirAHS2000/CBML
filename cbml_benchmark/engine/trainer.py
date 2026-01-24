@@ -132,69 +132,69 @@ def do_train(
             # ================================================================
             # MP-CBML ENHANCED STATISTICS LOGGING
             # ================================================================
-            if cfg.LOSSES.NAME == 'mpcbml_loss':
-                stats = criterion.get_last_stats()
-                header_written = log_statistics_to_csv(
-                    stats,
-                    stats_log_path,
-                    iteration,
-                    header_written
-                )
+            # if cfg.LOSSES.NAME == 'mpcbml_loss':
+            #     stats = criterion.get_last_stats()
+            #     header_written = log_statistics_to_csv(
+            #         stats,
+            #         stats_log_path,
+            #         iteration,
+            #         header_written
+            #     )
 
-                plot_dir = os.path.join('outputs', 'dist_plots')
-                os.makedirs(plot_dir, exist_ok=True)
+            #     plot_dir = os.path.join('outputs', 'dist_plots')
+            #     os.makedirs(plot_dir, exist_ok=True)
 
-                logger.info('Computing Similarity Distributions...')
+            #     logger.info('Computing Similarity Distributions...')
 
-                # training set distribution (overfitting check)
-                # use eval_train_loader (no augmentation) to get clean stats
-                train_pos, train_neg = compute_similarity_stats(model, criterion, eval_train_loader, device)
-                plot_distribution_figure(
-                    train_pos, train_neg,
-                    title=f'Train Distribution (Iter {iteration})',
-                    save_path=os.path.join(plot_dir, f'train_dist_{iteration:06d}.png')
-                )
+            #     # training set distribution (overfitting check)
+            #     # use eval_train_loader (no augmentation) to get clean stats
+            #     train_pos, train_neg = compute_similarity_stats(model, criterion, eval_train_loader, device)
+            #     plot_distribution_figure(
+            #         train_pos, train_neg,
+            #         title=f'Train Distribution (Iter {iteration})',
+            #         save_path=os.path.join(plot_dir, f'train_dist_{iteration:06d}.png')
+            #     )
 
-            elif cfg.LOSSES.NAME == 'cbml_loss':
-                # Get all logged values
-                mvc_val = getattr(criterion, 'current_mvc_value', 0.0) or 0.0
-                pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
-                neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
-                xi_val = getattr(criterion, 'current_xi', 0.0) or 0.0
+            # elif cfg.LOSSES.NAME == 'cbml_loss':
+            #     # Get all logged values
+            #     mvc_val = getattr(criterion, 'current_mvc_value', 0.0) or 0.0
+            #     pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
+            #     neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
+            #     xi_val = getattr(criterion, 'current_xi', 0.0) or 0.0
                 
-                # Loss components (NEW)
-                cbml_total = getattr(criterion, 'cbml_total', 0.0) or 0.0
-                pos_loss = getattr(criterion, 'pos_loss_total', 0.0) or 0.0
-                neg_loss = getattr(criterion, 'neg_loss_total', 0.0) or 0.0
-                mvc_contrib = getattr(criterion, 'mvc_contribution', 0.0) or 0.0
+            #     # Loss components (NEW)
+            #     cbml_total = getattr(criterion, 'cbml_total', 0.0) or 0.0
+            #     pos_loss = getattr(criterion, 'pos_loss_total', 0.0) or 0.0
+            #     neg_loss = getattr(criterion, 'neg_loss_total', 0.0) or 0.0
+            #     mvc_contrib = getattr(criterion, 'mvc_contribution', 0.0) or 0.0
 
-                # Write header if file doesn't exist yet
-                if not os.path.exists(stats_log_path):
-                    with open(stats_log_path, mode='w', newline='') as f:
-                        writer = csv.writer(f)
-                        writer.writerow([
-                            'iteration',
-                            # Statistics
-                            'mvc_value', 'pos_mean', 'neg_mean', 'xi',
-                            # Loss components
-                            'cbml_total', 'pos_loss', 'neg_loss', 'mvc_contrib'
-                        ])
+            #     # Write header if file doesn't exist yet
+            #     if not os.path.exists(stats_log_path):
+            #         with open(stats_log_path, mode='w', newline='') as f:
+            #             writer = csv.writer(f)
+            #             writer.writerow([
+            #                 'iteration',
+            #                 # Statistics
+            #                 'mvc_value', 'pos_mean', 'neg_mean', 'xi',
+            #                 # Loss components
+            #                 'cbml_total', 'pos_loss', 'neg_loss', 'mvc_contrib'
+            #             ])
 
-                with open(stats_log_path, mode='a', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerow([
-                        round(iteration, 5),
-                        # Statistics
-                        round(mvc_val, 8),
-                        round(pos_mean, 8),
-                        round(neg_mean, 8),
-                        round(xi_val, 8),
-                        # Loss components
-                        round(cbml_total, 8),
-                        round(pos_loss, 8),
-                        round(neg_loss, 8),
-                        round(mvc_contrib, 8)
-                    ])
+            #     with open(stats_log_path, mode='a', newline='') as f:
+            #         writer = csv.writer(f)
+            #         writer.writerow([
+            #             round(iteration, 5),
+            #             # Statistics
+            #             round(mvc_val, 8),
+            #             round(pos_mean, 8),
+            #             round(neg_mean, 8),
+            #             round(xi_val, 8),
+            #             # Loss components
+            #             round(cbml_total, 8),
+            #             round(pos_loss, 8),
+            #             round(neg_loss, 8),
+            #             round(mvc_contrib, 8)
+            #         ])
 
             # Update best model if recall@1 improves.
             if recall_curr[0] > best_recall:
