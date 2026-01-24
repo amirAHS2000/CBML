@@ -9,7 +9,7 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
         optimizer_weights: SGD for MP-CBML weights, or None otherwise
     """
     params = []
-    base_lr = cfg.SOLVER.BASE_LR
+    base_lr = getattr(cfg.SOLVER, 'BASE_LR', 0.00003)
     
     # Add model parameters with lr multiplier
     for key, value in model.named_parameters():
@@ -31,7 +31,6 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
                 continue
             if name == 'weights':
                 continue
-            
             if 'prototypes' in name:
                 # Prototypes need to move fast to catch data clusters
                 current_lr_mul = 100.0
@@ -64,7 +63,7 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
     if is_mpcbml and criterion is not None and hasattr(criterion, 'weights'):
         optimizer_weights = torch.optim.SGD(
             [{"params": [criterion.weights]}],
-            lr=getattr(cfg.SOLVER, 'WEIGHT_LR', 1e-4),
+            lr=getattr(cfg.SOLVER, 'WEIGHT_LR', 0.00003),
             momentum=getattr(cfg.SOLVER, 'WEIGHT_MOMENTUM', 0.0),
             weight_decay=0.0
         )
