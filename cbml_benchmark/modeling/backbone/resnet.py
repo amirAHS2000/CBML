@@ -70,7 +70,9 @@ class ResNet18(nn.Module):
     def load_param(self, model_path):
         param_dict = torch.load(model_path, weights_only=False)
         for i in param_dict:
-            if 'last_linear' in i:
+            # if 'last_linear' in i:
+            #     continue
+            if i.startswith('fc.'):
                 continue
             self.model.state_dict()[i].copy_(param_dict[i])
 
