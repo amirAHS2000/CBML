@@ -23,7 +23,7 @@ def compute_statistics(
     loss_main,
     loss_reg,
     # Additional parameters needed from loss class
-    gamma_reg,
+    lambda_reg,
     global_s_pos,
     global_s_neg,
     theta,
@@ -70,7 +70,7 @@ def compute_statistics(
 
     with torch.no_grad():
         # Loss components
-        stats['loss_total'] = (loss_main + gamma_reg * loss_reg).item()
+        stats['loss_total'] = (loss_main + lambda_reg * loss_reg).item()
         stats['loss_main'] = loss_main.item()
         stats['loss_reg'] = loss_reg.item()
 
