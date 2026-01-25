@@ -15,11 +15,13 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
     for key, value in model.named_parameters():
         if not value.requires_grad:
             continue
-        # Backbone usally needs lower LR (finetuning)
-        lr_mul = 1.0 if "backbone" in key else 1.0
+        
+        is_backbone = 'backbone' in key
+        lr_mul = 0.03 if is_backbone else 1.0
         params.append({
             'params': [value],
-            'lr': base_lr * lr_mul
+            'lr': base_lr * lr_mul,
+            'weight_decay': cfg.SOLVER.WEIGHT_DECAY if is_backbone else 0.0
         })
 
     is_mpcbml = (cfg.LOSSES.NAME == 'mpcbml_loss')
@@ -33,7 +35,7 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
                 continue
             if 'prototypes' in name:
                 # Prototypes need to move fast to catch data clusters
-                current_lr_mul = 100.0
+                current_lr_mul = 30.0
             elif 'theta' in name:
                 current_lr_mul = 1.0
             else:
@@ -41,7 +43,8 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
             
             params.append({
                 'params': [param],
-                'lr': base_lr * current_lr_mul
+                'lr': base_lr * current_lr_mul,
+                'weight_decay': 0.0
             })
 
     elif loss_param is not None:
@@ -54,9 +57,13 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
     
     # Build optimizer - pass lr directly, let PyTorch handle lr_mul
     optimizer_main = getattr(torch.optim, cfg.SOLVER.OPTIMIZER_NAME)(
-        params,
-        weight_decay=cfg.SOLVER.WEIGHT_DECAY,
+        params
     )
+
+    for i, g in enumerate(optimizer_main.param_groups):
+        print(
+            f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
+        )
     
     # Build separate SGD optimizer for weights (MP-CBML only)
     optimizer_weights = None
