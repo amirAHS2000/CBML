@@ -25,7 +25,7 @@ SOLVER:
 LOSSES:
   NAME: 'mpcbml_loss'
   MPCBML_LOSS:
-    INIT_METHOD: 'kmeans'
+    INIT_METHOD: 'random'
     N_CLASSES: 100
     PROTOTYPE_PER_CLASS: 3
     GAMMA_REG: 0.1
