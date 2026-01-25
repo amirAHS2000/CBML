@@ -1,7 +1,7 @@
 MODEL:
   BACKBONE:
     NAME: resnet18
-  PRETRAIN: output-resnet18-cub-mpcbml/model_005000.pth
+  PRETRAIN: output-resnet18-cub-mpcbml/model_008000.pth
 
 SAVE_DIR: output-resnet18-cub-mpcbml
 

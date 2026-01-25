@@ -15,14 +15,23 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
     for key, value in model.named_parameters():
         if not value.requires_grad:
             continue
-        
-        is_backbone = 'backbone' in key
-        lr_mul = 0.03 if is_backbone else 1.0
+
+        if key.startswith('backbone.'):
+            lr_mul = 0.05                     # backbone (slightly higher)
+            weight_decay = cfg.SOLVER.WEIGHT_DECAY
+        elif key.startswith('headembedding.'):
+            lr_mul = 5.0                      # head learns fast
+            weight_decay = 0.0
+        else:
+            lr_mul = 1.0                      # fallback (rare)
+            weight_decay = 0.0
+
         params.append({
             'params': [value],
             'lr': base_lr * lr_mul,
-            'weight_decay': cfg.SOLVER.WEIGHT_DECAY if is_backbone else 0.0
+            'weight_decay': weight_decay
         })
+
 
     is_mpcbml = (cfg.LOSSES.NAME == 'mpcbml_loss')
    
