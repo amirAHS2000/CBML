@@ -44,7 +44,7 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
                 continue
             if 'prototypes' in name:
                 # Prototypes need to move fast to catch data clusters
-                current_lr_mul = 100.0
+                current_lr_mul = 50.0
             elif 'theta' in name:
                 current_lr_mul = 1.0
             else:
