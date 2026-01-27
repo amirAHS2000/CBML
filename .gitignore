@@ -1,1 +1,5 @@
 .vscode
+resource
+__pycache__
+cbml_benchmark.egg-info
+output-resnet18-cub-mpcbml
