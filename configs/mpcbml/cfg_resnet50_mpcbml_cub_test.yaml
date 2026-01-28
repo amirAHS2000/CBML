@@ -1,7 +1,7 @@
 MODEL:
   BACKBONE:
     NAME: resnet18
-  PRETRAIN: output-resnet18-cub-mpcbml/model_009150.pth
+  PRETRAIN: output-resnet18-cub-mpcbml/best_model.pth
 
 SAVE_DIR: output-resnet18-cub-mpcbml
 
@@ -27,7 +27,7 @@ LOSSES:
   MPCBML_LOSS:
     INIT_METHOD: 'random'
     N_CLASSES: 100
-    PROTOTYPE_PER_CLASS: 3
+    PROTOTYPE_PER_CLASS: 20
     GAMMA_REG: 0.1
     LAMBDA_REG: 0.1
     THETA_IS_LEARNABLE: False

@@ -1,7 +1,7 @@
 MODEL:
   BACKBONE:
     NAME: resnet50
-  PRETRAIN: output-resnet50-cars196-mpcbml/model_005000.pth
+  PRETRAIN: output-resnet50-cars196-mpcbml/best_model.pth
 
 SAVE_DIR: output-resnet50-cars196-mpcbml
 
