@@ -48,6 +48,9 @@ class MpcbmlLoss(nn.Module):
             torch.tensor(priors_list, device=self.device)
         )
 
+        self.hyper_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'GAMMA_REG', 0.2)
+        self.reg_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'LAMBDA_REG', 1.0)
+
     @torch.no_grad()
     def set_prototypes_and_weights(self, prototypes, cluster_sizes):
         prototypes = prototypes.to(self.device)
@@ -84,6 +87,22 @@ class MpcbmlLoss(nn.Module):
         if embeddings.device != self.prototypes.device:
             embeddings = embeddings.to(self.device)
             targets = targets.to(self.device)
+
+        sim_mat = torch.matmul(embeddings, torch.t(embeddings))
+        epsilon = 1e-5
+        reg_term = list()
+        for i in range(embeddings.size(0)):
+            pos_pair_ = sim_mat[i][targets == targets[i]]
+            pos_pair_ = pos_pair_[pos_pair_ < 1 - epsilon]
+            neg_pair_ = sim_mat[i][targets != targets[i]]
+
+            if len(neg_pair_) < 1 or len(pos_pair_) < 1:
+                continue
+
+            mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
+            sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
+            reg_term.append(self.reg_weight * sigma_)
+        reg_loss = sum(reg_term) / embeddings.size(0)
 
         P = self.prototypes
         P = F.normalize(P, p=2, dim=-1) # [C, K, D]
@@ -133,10 +152,12 @@ class MpcbmlLoss(nn.Module):
         best_neg_w = neg_w[b_idx, best_neg_class, neg_best_k[b_idx, best_neg_class]]        # [B]
         prior_neg = neg_priors[b_idx, best_neg_class]
 
-        loss = F.softplus(
+        main_loss = F.softplus(
             torch.log(prior_neg / prior_pos) +
             torch.log(best_neg_w / best_pos_w) +
             (beta * (best_neg_val - best_pos_val))
         ).mean()
+
+        loss = main_loss + reg_loss
 
         return loss
