@@ -17,10 +17,10 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
             continue
 
         if key.startswith('backbone.'):
-            lr_mul = 0.3                     # backbone (slightly higher)
+            lr_mul = 0.1                     # backbone (slightly higher)
             weight_decay = cfg.SOLVER.WEIGHT_DECAY
         elif key.startswith('headembedding.'):
-            lr_mul = 5.0                      # head learns fast
+            lr_mul = 1.0                      # head learns fast
             weight_decay = 0.0
         else:
             lr_mul = 1.0                      # fallback (rare)
