@@ -88,21 +88,21 @@ class MpcbmlLoss(nn.Module):
             embeddings = embeddings.to(self.device)
             targets = targets.to(self.device)
 
-        sim_mat = torch.matmul(embeddings, torch.t(embeddings))
-        epsilon = 1e-5
-        reg_term = list()
-        for i in range(embeddings.size(0)):
-            pos_pair_ = sim_mat[i][targets == targets[i]]
-            pos_pair_ = pos_pair_[pos_pair_ < 1 - epsilon]
-            neg_pair_ = sim_mat[i][targets != targets[i]]
+        # sim_mat = torch.matmul(embeddings, torch.t(embeddings))
+        # epsilon = 1e-5
+        # reg_term = list()
+        # for i in range(embeddings.size(0)):
+        #     pos_pair_ = sim_mat[i][targets == targets[i]]
+        #     pos_pair_ = pos_pair_[pos_pair_ < 1 - epsilon]
+        #     neg_pair_ = sim_mat[i][targets != targets[i]]
 
-            if len(neg_pair_) < 1 or len(pos_pair_) < 1:
-                continue
+        #     if len(neg_pair_) < 1 or len(pos_pair_) < 1:
+        #         continue
 
-            mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
-            sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
-            reg_term.append(self.reg_weight * sigma_)
-        reg_loss = sum(reg_term) / embeddings.size(0)
+        #     mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
+        #     sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
+        #     reg_term.append(self.reg_weight * sigma_)
+        # reg_loss = sum(reg_term) / embeddings.size(0)
 
         P = self.prototypes
         P = F.normalize(P, p=2, dim=-1) # [C, K, D]
@@ -117,7 +117,8 @@ class MpcbmlLoss(nn.Module):
 
         flat_protos = P.view(C * K, -1) # [C*K, D]
         sims = torch.matmul(z, flat_protos.t()).view(B, C, K) # [B, C, K]
-        weighted_sims = sims * W.unsqueeze(0) # [B, C, K]
+        # weighted_sims = sims * W.unsqueeze(0) # [B, C, K]
+        weighted_sims = sims * W.unsqueeze(0) / 0.1
 
         target_mask = F.one_hot(targets, num_classes=C).bool() # [B, C]
 
@@ -158,6 +159,7 @@ class MpcbmlLoss(nn.Module):
             (beta * (best_neg_val - best_pos_val))
         ).mean()
 
-        loss = main_loss + reg_loss
+        # loss = main_loss + reg_loss
+        loss = main_loss
 
         return loss

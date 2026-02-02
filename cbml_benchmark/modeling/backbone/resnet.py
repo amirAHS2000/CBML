@@ -16,6 +16,7 @@ class ResNet50(nn.Module):
         for module in filter(lambda m: type(m) == nn.BatchNorm2d, self.model.modules()):
             module.eval()
             module.train = lambda _: None
+        self.ln = nn.LayerNorm(2048)
 
     def forward(self, x):
         x = self.model.conv1(x)
@@ -28,9 +29,12 @@ class ResNet50(nn.Module):
         x = self.model.layer3(x)
         x = self.model.layer4(x)
 
-        x = self.model.avgpool(x)
-        x = x.view(x.size(0), -1)
-        # x = self.model.fc(x)  --remove
+        # GMP + LN
+        B, C, H, W = x.shape
+        x = x.view(B, C, H*W, 1) # Channels first for max
+        x = x.view(B, C, -1).max(-1)[0] # GMP [B, 2048]
+        x = self.ln(x)
+
         return x
 
     def load_param(self, model_path):
