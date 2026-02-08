@@ -117,8 +117,8 @@ class MpcbmlLoss(nn.Module):
 
         flat_protos = P.view(C * K, -1) # [C*K, D]
         sims = torch.matmul(z, flat_protos.t()).view(B, C, K) # [B, C, K]
-        # weighted_sims = sims * W.unsqueeze(0) # [B, C, K]
-        weighted_sims = sims * W.unsqueeze(0) / 0.1
+        weighted_sims = sims * W.unsqueeze(0) # [B, C, K]
+        # weighted_sims = sims * W.unsqueeze(0) / 0.1
 
         target_mask = F.one_hot(targets, num_classes=C).bool() # [B, C]
 
