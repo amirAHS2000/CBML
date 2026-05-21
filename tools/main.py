@@ -2,7 +2,6 @@ import gc
 import json
 import argparse
 import torch
-import torch.nn.functional as F
 
 from cbml_benchmark.config import cfg
 from cbml_benchmark.data import build_data
@@ -68,17 +67,17 @@ def train(cfg):
     if cfg.LOSSES.NAME_AUX in ['softtriple_loss', 'proxynca_loss', 'center_loss', 'adv_loss']:
         loss_param = criterion_aux
 
-    optimizer_main, optimizer_weights = build_optimizer(
+    optimizer_main, optimizer_loss = build_optimizer(
         cfg,
         model,
         criterion=criterion,
         loss_param=loss_param,
     )
 
-    scheduler_main, scheduler_weights = build_lr_scheduler(
+    scheduler_main, scheduler_loss = build_lr_scheduler(
         cfg,
         optimizer_main,
-        optimizer_weights,
+        optimizer_loss,
     )
 
     train_loader = build_data(cfg, is_train=True)
@@ -101,9 +100,9 @@ def train(cfg):
         val_loader,
         eval_train_loader,
         optimizer_main,
-        optimizer_weights,
+        optimizer_loss,
         scheduler_main,
-        scheduler_weights,
+        scheduler_loss,
         criterion,
         criterion_aux,
         checkpointer,

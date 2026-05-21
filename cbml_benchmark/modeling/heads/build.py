@@ -9,6 +9,7 @@ def build_head(cfg):
     return HEADS[cfg.MODEL.HEAD.NAME](cfg, in_channels=1024 if cfg.MODEL.BACKBONE.NAME == 'bninception' or cfg.MODEL.BACKBONE.NAME == 'googlenet'  else 2048)
 
 
+# For ResNet18 the in_channel should be 512
 # def build_head(cfg):
 #     assert cfg.MODEL.HEAD.NAME in HEADS, f"head {cfg.MODEL.HEAD.NAME} is not defined"
 #     return HEADS[cfg.MODEL.HEAD.NAME](cfg, in_channels=1024 if cfg.MODEL.BACKBONE.NAME == 'bninception' or cfg.MODEL.BACKBONE.NAME == 'googlenet'  else 512)

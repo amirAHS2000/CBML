@@ -47,8 +47,8 @@ class MpcbmlLoss(nn.Module):
             torch.tensor(priors_list, device=self.device)
         )
 
-        self.hyper_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'GAMMA_REG', 0.2)
-        self.reg_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'LAMBDA_REG', 0.3)
+        # self.hyper_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'GAMMA_REG', 0.2)
+        # self.reg_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'LAMBDA_REG', 1.0)
         self.register_buffer('pos_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
         self.register_buffer('neg_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
 
@@ -94,21 +94,21 @@ class MpcbmlLoss(nn.Module):
             targets = targets.to(self.device)
 
         # ------------- Computing the regularization term (based on original CBML implementation) -----------------
-        sim_mat = torch.matmul(embeddings, torch.t(embeddings))
-        epsilon = 1e-5
-        reg_term = list()
-        for i in range(embeddings.size(0)):
-            pos_pair_ = sim_mat[i][targets == targets[i]]
-            pos_pair_ = pos_pair_[pos_pair_ < 1 - epsilon]
-            neg_pair_ = sim_mat[i][targets != targets[i]]
+        # sim_mat = torch.matmul(embeddings, torch.t(embeddings))
+        # epsilon = 1e-5
+        # reg_term = list()
+        # for i in range(embeddings.size(0)):
+        #     pos_pair_ = sim_mat[i][targets == targets[i]]
+        #     pos_pair_ = pos_pair_[pos_pair_ < 1 - epsilon]
+        #     neg_pair_ = sim_mat[i][targets != targets[i]]
 
-            if len(neg_pair_) < 1 or len(pos_pair_) < 1:
-                continue
+        #     if len(neg_pair_) < 1 or len(pos_pair_) < 1:
+        #         continue
 
-            mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
-            sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
-            reg_term.append(self.reg_weight * sigma_)
-        reg_loss = sum(reg_term) / embeddings.size(0)
+        #     mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
+        #     sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
+        #     reg_term.append(self.reg_weight * sigma_)
+        # reg_loss = sum(reg_term) / embeddings.size(0)
         # --------------------------------------------------------------------------------------------------------
 
         z = embeddings # [B, D]
@@ -124,31 +124,50 @@ class MpcbmlLoss(nn.Module):
         # Compute all similarities [B, C, K]
         flat_protos = P.view(C * K, -1) # [C * K, D]
         # Calculate Euclidean distance [B, C * K]
-        logits = z @ flat_protos.T - 0.5 * (flat_protos.norm(p=2, dim=1) ** 2) # [B, C * K]
-        logits = logits.view(B, C, K)
+        distances = torch.cdist(z, flat_protos, p=2.0)
+        # Negate distance to use as similarity (so argmax still finds the closest)
+        sims = -distances.view(B, C, K)
 
         batch_loss = []
+        # selected_pos_cls = []
+        # selected_pos_idx = []
+        # selected_neg_cls = []
+        # selected_neg_idx = []
 
         for i in range(B):
             
             target_class = targets[i].item()
+            pos_sims = sims[i, target_class, :] # [K]
             pos_weights = W[target_class] # [K]
             pos_priors = self.class_priors[target_class] # [1]
-            pos_score = torch.log(pos_weights) + logits[i, target_class, :]
+
+            # select best positive based on max(w * sim)
+            pos_score = pos_weights * pos_sims # [K]
+
+            # TODO:
+            pos_score = torch.log(pos_weights) + torch.log(pos_sims)
 
             best_pos_proto_idx = torch.argmax(pos_score).item()
             best_pos_proto = P[target_class, best_pos_proto_idx]
             best_pos_weight = W[target_class, best_pos_proto_idx]
 
+            # selected_pos_cls.append(target_class)
+            # selected_pos_idx.append(best_pos_proto_idx)
             self.pos_proto_counts[target_class, best_pos_proto_idx] += 1
 
             # negative selection
             neg_mask = torch.arange(C, device=self.device) != target_class
             neg_class_indices = torch.where(neg_mask)[0] # absolute class indices
 
+            neg_sims = sims[i, neg_mask, :] # [C - 1, K]
             neg_weights = W[neg_mask] # [C - 1, K]
             neg_priors = self.class_priors[neg_mask] # [C - 1]
-            neg_score = torch.log(neg_priors.unsqueeze(1)) + torch.log(neg_weights) + logits[i, neg_mask, :]
+
+            # select best negative based on max(class_prior * w * sim)
+            neg_score = neg_priors.unsqueeze(1) * neg_weights * neg_sims # [C - 1, K]
+
+            # TODO:
+            neg_score = torch.log(neg_priors.unsqueeze(1)) + torch.log(neg_weights) + torch.log(neg_sims)
 
             flat_max_idx = torch.argmax(neg_score)
             best_neg_class_idx_masked = flat_max_idx // K
@@ -162,6 +181,8 @@ class MpcbmlLoss(nn.Module):
             best_neg_weight = W[best_neg_class_idx, best_neg_proto_idx]
             best_neg_class_prior = self.class_priors[best_neg_class_idx]
 
+            # selected_neg_cls.append(best_neg_class_idx)
+            # selected_neg_idx.append(best_neg_proto_idx)
             self.neg_proto_counts[best_neg_class_idx, best_neg_proto_idx] += 1
 
             current_loss = F.softplus(
@@ -180,8 +201,21 @@ class MpcbmlLoss(nn.Module):
         if len(batch_loss) == 0:
             return torch.zeros(1, requires_grad=True).cuda()
         
-        main_loss = sum(batch_loss) / B
-        loss = main_loss + reg_loss
-        # loss = sum(batch_loss) / B
+        loss = sum(batch_loss) / B
+
+        # Index extraction
+        # with torch.no_grad():
+        #     self.last_best_pos_indices = {
+        #         'c': torch.tensor(selected_pos_cls),
+        #         'k': torch.tensor(selected_pos_idx)
+        #     }
+        #     self.last_best_neg_indices = {
+        #         'c': torch.tensor(selected_neg_cls),
+        #         'k': torch.tensor(selected_neg_idx)
+        #     }
 
         return loss
+
+    # def get_last_best_indices(self):
+    #     """Returns dictionaries of absolute (class, k) indices for the last batch."""
+    #     return self.last_best_pos_indices, self.last_best_neg_indices

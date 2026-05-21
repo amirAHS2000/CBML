@@ -1,17 +1,15 @@
-import os
 import datetime
 import time
-import csv
 
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 from cbml_benchmark.data.evaluations import RetMetric
-from cbml_benchmark.utils.feat_extractor import feat_extractor, compute_similarity_stats
+from cbml_benchmark.utils.feat_extractor import feat_extractor
 from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
-from cbml_benchmark.utils.visualization_utils import plot_distribution_figure
 
 
 def update_ema_variables(model, ema_model):
@@ -26,39 +24,6 @@ def update_ema_variables(model, ema_model):
         # Update EMA parameters: new_ema = alpha * old_ema + (1 - alpha) * current_param
         ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
 
-def log_statistics_to_csv(stats, csv_path, iteration, header_written):
-    """
-    Log statistics dictionary to CSV file.
-
-    Args:
-        stats: dict from criterion.get_last_stats()
-        csv_path: path to CSV file
-        iteration: current iteration
-        header_written: bool flag
-
-    Returns:
-        bool: updated header_written
-    """
-    if stats is None:
-        return header_written
-
-    # Make sure output dir exists
-    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-
-    fieldnames = ['iteration'] + list(stats.keys())
-
-    if not header_written:
-        with open(csv_path, mode='w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-        header_written = True
-
-    with open(csv_path, mode='a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writerow({'iteration': iteration, **stats})
-
-    return header_written
-
 def do_train(
         cfg,               # Configuration object with training settings.
         model,             # Neural network model to train.
@@ -66,9 +31,9 @@ def do_train(
         val_loader,        # DataLoader for validation data.
         eval_train_loader, # DataLoader for training data (without any augmentationsa or transformations just for recalls calculation)
         optimizer_main,         # Optimizer for updating model parameters.
-        optimizer_weights,
+        optimizer_loss,
         scheduler_main,         # Learning rate scheduler.
-        scheduler_weights,
+        scheduler_loss,
         criterion,         # Primary loss function.
         criterion_aux,     # Auxiliary loss function (if any).
         checkpointer,      # Object to save and load model checkpoints.
@@ -98,12 +63,6 @@ def do_train(
     start_training_time = time.time()
     end = time.time()
 
-    # define log file
-    stats_log_path = os.path.join('outputs', 'statistics_log.csv')
-    os.makedirs('outputs', exist_ok=True)
-    # flag to track if header has been written
-    header_written = os.path.exists(stats_log_path)
-
     for iteration, (images, targets) in enumerate(train_loader, start_iter):
         # ====================================================================
         # VALIDATION
@@ -129,73 +88,6 @@ def do_train(
             # Log current recall metrics.
             logger.info(f'Val Recalls: {recall_curr}')
 
-            # ================================================================
-            # MP-CBML ENHANCED STATISTICS LOGGING
-            # ================================================================
-            # if cfg.LOSSES.NAME == 'mpcbml_loss':
-            #     stats = criterion.get_last_stats()
-            #     header_written = log_statistics_to_csv(
-            #         stats,
-            #         stats_log_path,
-            #         iteration,
-            #         header_written
-            #     )
-
-            #     plot_dir = os.path.join('outputs', 'dist_plots')
-            #     os.makedirs(plot_dir, exist_ok=True)
-
-            #     logger.info('Computing Similarity Distributions...')
-
-            #     # training set distribution (overfitting check)
-            #     # use eval_train_loader (no augmentation) to get clean stats
-            #     train_pos, train_neg = compute_similarity_stats(model, criterion, eval_train_loader, device)
-            #     plot_distribution_figure(
-            #         train_pos, train_neg,
-            #         title=f'Train Distribution (Iter {iteration})',
-            #         save_path=os.path.join(plot_dir, f'train_dist_{iteration:06d}.png')
-            #     )
-
-            # elif cfg.LOSSES.NAME == 'cbml_loss':
-            #     # Get all logged values
-            #     mvc_val = getattr(criterion, 'current_mvc_value', 0.0) or 0.0
-            #     pos_mean = getattr(criterion, 'current_positive_mean', 0.0) or 0.0
-            #     neg_mean = getattr(criterion, 'current_negative_mean', 0.0) or 0.0
-            #     xi_val = getattr(criterion, 'current_xi', 0.0) or 0.0
-                
-            #     # Loss components (NEW)
-            #     cbml_total = getattr(criterion, 'cbml_total', 0.0) or 0.0
-            #     pos_loss = getattr(criterion, 'pos_loss_total', 0.0) or 0.0
-            #     neg_loss = getattr(criterion, 'neg_loss_total', 0.0) or 0.0
-            #     mvc_contrib = getattr(criterion, 'mvc_contribution', 0.0) or 0.0
-
-            #     # Write header if file doesn't exist yet
-            #     if not os.path.exists(stats_log_path):
-            #         with open(stats_log_path, mode='w', newline='') as f:
-            #             writer = csv.writer(f)
-            #             writer.writerow([
-            #                 'iteration',
-            #                 # Statistics
-            #                 'mvc_value', 'pos_mean', 'neg_mean', 'xi',
-            #                 # Loss components
-            #                 'cbml_total', 'pos_loss', 'neg_loss', 'mvc_contrib'
-            #             ])
-
-            #     with open(stats_log_path, mode='a', newline='') as f:
-            #         writer = csv.writer(f)
-            #         writer.writerow([
-            #             round(iteration, 5),
-            #             # Statistics
-            #             round(mvc_val, 8),
-            #             round(pos_mean, 8),
-            #             round(neg_mean, 8),
-            #             round(xi_val, 8),
-            #             # Loss components
-            #             round(cbml_total, 8),
-            #             round(pos_loss, 8),
-            #             round(neg_loss, 8),
-            #             round(mvc_contrib, 8)
-            #         ])
-
             # Update best model if recall@1 improves.
             if recall_curr[0] > best_recall:
                 best_recall = recall_curr[0]
@@ -220,6 +112,30 @@ def do_train(
             train_recalls_over_iters.append(recall_curr_train_eval)
             val_recalls_over_iters.append(recall_curr)
 
+            if iteration in [0, 1000, 3000, 6000, 8000]:
+                with torch.no_grad():
+                    # shape: [C, K] -> each entry is the L2 norm of that prototype
+                    proto_norms_per_dim = criterion.prototypes.norm(p=2, dim=2)
+                    np.savetxt(
+                        f'proto_norms_iter_{iteration:06d}.txt',
+                        proto_norms_per_dim.cpu().numpy(),
+                        fmt='%.6f',
+                        delimiter='\t',
+                        header=f'Prototype L2 norms at iteration {iteration}'
+                    )
+
+                    # shape: [C, K] -> each entry is the weight's value corresponding to that prototype
+                    weight_value_per_dim = criterion.weights
+                    np.savetxt(
+                        f'weight_value_iter_{iteration:06d}.txt',
+                        weight_value_per_dim.cpu().numpy(),
+                        fmt='%.6f',
+                        delimiter='\t',
+                        header=f"Weight's value at iteration {iteration}"
+                    )
+                    
+                    logger.info(f"Saved prototype/weight snapshots at iteration {iteration}")
+
         # ====================================================================
         # TRAINING STEP
         # ====================================================================
@@ -234,8 +150,8 @@ def do_train(
 
         # Update learning rate scheduler.
         scheduler_main.step()
-        if scheduler_weights is not None:
-            scheduler_weights.step()
+        if scheduler_loss is not None:
+            scheduler_loss.step()
 
         # Move data to the specified device.
         images = images.to(device)
@@ -262,18 +178,18 @@ def do_train(
 
         # Backward pass and optimization.
         optimizer_main.zero_grad()
-        if optimizer_weights is not None:
-            optimizer_weights.zero_grad()
+        if optimizer_loss is not None:
+            optimizer_loss.zero_grad()
 
         loss.backward()
 
         # If we have a separate weights optimizer (MP-CBML case)
-        if optimizer_weights is not None and cfg.LOSSES.NAME == 'mpcbml_loss':
+        if optimizer_loss is not None and cfg.LOSSES.NAME == 'mpcbml_loss':
             # apply constrained gradient update before SGD step
             if hasattr(criterion, 'constrained_weight_update'):
                 criterion.constrained_weight_update()
             optimizer_main.step()
-            optimizer_weights.step()
+            optimizer_loss.step()
         else:
             # single optimizer case
             optimizer_main.step()
@@ -324,6 +240,28 @@ def do_train(
         plt.title(f'Recall@K over Iterations (k={k})')
         plt.savefig(f'recall_at_{k}_iter_{iteration}.png')
         plt.close()  # Close to free memory
+
+    # Positive & Negative prototype usage heatmap
+    pos_proto_usage = criterion.pos_proto_counts.cpu().numpy() # [C, K]
+    neg_proto_usage = criterion.neg_proto_counts.cpu().numpy() # [C, K]
+
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(pos_proto_usage, annot=False, cmap='YlOrRd', cbar_kws={'label': 'Selection count'})
+    plt.xlabel('Positive Prototype index')
+    plt.ylabel('Class index')
+    plt.title('Positive Prototype selection heatmap')
+    plt.savefig('positive_prototype_selection.png', dpi=150)
+    plt.close()
+
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(neg_proto_usage, annot=False, cmap='YlOrRd', cbar_kws={'label': 'Selection count'})
+    plt.xlabel('Negative Prototype index')
+    plt.ylabel('Class index')
+    plt.title('Negative Prototype selection heatmap')
+    plt.savefig('negative_prototype_selection.png', dpi=150)
+    plt.close()
+
+    # ====================================================================    
 
     # Log total training time.
     total_training_time = time.time() - start_training_time
