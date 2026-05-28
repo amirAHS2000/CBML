@@ -41,7 +41,7 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
         if hasattr(criterion, 'prototypes') and criterion.prototypes.requires_grad:
             loss_params.append({
                 'params': [criterion.prototypes],
-                'lr': base_lr * 100.0,         # as before, high LR
+                'lr': base_lr * 1000.0,         # as before, high LR
                 'momentum': 0.9,              # pure SGD, no momentum
                 'weight_decay': 0.0
             })
