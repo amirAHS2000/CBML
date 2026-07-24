@@ -34,7 +34,7 @@ class MpcbmlLoss(nn.Module):
         )
        
         # Mixture weights [C, K]
-        # Be updated with Langrange Multiplier
+        # Be updated with Lagrange Multiplier
         self.weights = nn.Parameter(
             torch.ones(self.num_classes, self.prototype_per_class, device=self.device)
             / self.prototype_per_class,
@@ -47,11 +47,39 @@ class MpcbmlLoss(nn.Module):
             torch.tensor(priors_list, device=self.device)
         )
 
+        # regularization term parameters
         self.hyper_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'GAMMA_REG', 0.2)
         self.reg_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'LAMBDA_REG', 0.3)
+        self.ma_momentum = getattr(cfg.LOSSES.MPCBML_LOSS, 'MA_MOMENTUM', 0.9)
+        self.register_buffer('global_ma_pos', torch.tensor(0.0))
+        self.register_buffer('global_ma_neg', torch.tensor(0.0))
+        # bias-correction step counter for the EMA (Adam-style warm-up fix)
+        self.register_buffer('ma_step', torch.tensor(0, dtype=torch.long))
         self.register_buffer('pos_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
         self.register_buffer('neg_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
 
+    @torch.no_grad()
+    def update_moving_average(self, current_pos_mean, current_neg_mean):
+        """
+        Update the global estimates using Exponential Moving Average (EMA).
+        No gradients flow through this update. Inputs are detached defensively
+        even though the decorator already disables grad tracking.
+        """
+        current_pos_mean = current_pos_mean.detach()
+        current_neg_mean = current_neg_mean.detach()
+
+        self.global_ma_pos = (self.ma_momentum * self.global_ma_pos + (1 - self.ma_momentum) * current_pos_mean)
+        self.global_ma_neg = (self.ma_momentum * self.global_ma_neg + (1 - self.ma_momentum) * current_neg_mean)
+        self.ma_step += 1
+
+    def _bias_corrected_ma(self):
+        """Adam-style bias correction so xi isn't badly underestimated near step 0."""
+        if self.ma_step.item() == 0:
+            return self.global_ma_pos, self.global_ma_neg
+        correction = 1 - (self.ma_momentum ** self.ma_step.item())
+        correction = max(correction, self.eps)
+        return self.global_ma_pos / correction, self.global_ma_neg / correction
+    
     @torch.no_grad()
     def set_prototypes_and_weights(self, prototypes, cluster_sizes):
         prototypes = prototypes.to(self.device)
@@ -93,24 +121,6 @@ class MpcbmlLoss(nn.Module):
             embeddings = embeddings.to(self.device)
             targets = targets.to(self.device)
 
-        # ------------- Computing the regularization term (based on original CBML implementation) -----------------
-        sim_mat = torch.matmul(embeddings, torch.t(embeddings))
-        epsilon = 1e-5
-        reg_term = list()
-        for i in range(embeddings.size(0)):
-            pos_pair_ = sim_mat[i][targets == targets[i]]
-            pos_pair_ = pos_pair_[pos_pair_ < 1 - epsilon]
-            neg_pair_ = sim_mat[i][targets != targets[i]]
-
-            if len(neg_pair_) < 1 or len(pos_pair_) < 1:
-                continue
-
-            mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
-            sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
-            reg_term.append(self.reg_weight * sigma_)
-        reg_loss = sum(reg_term) / embeddings.size(0)
-        # --------------------------------------------------------------------------------------------------------
-
         z = embeddings # [B, D]
         P = self.prototypes # [C, K, D]
         # P = F.normalize(self.prototypes, p=2, dim=2)
@@ -128,6 +138,8 @@ class MpcbmlLoss(nn.Module):
         logits = logits.view(B, C, K)
 
         batch_loss = []
+        current_pos_dist = []
+        current_neg_dist = []
 
         for i in range(B):
             
@@ -176,12 +188,46 @@ class MpcbmlLoss(nn.Module):
 
             batch_loss.append(current_loss)
 
+            # regularization term components
+            # -- positive side: monitoring only, no gradient needed
+            with torch.no_grad():
+                pos_dist = torch.norm(embeddings[i] - best_pos_proto, p=2)
+                current_pos_dist.append(pos_dist)
+
+            # -- negative side: MUST stay attached to the graph, this is what
+            #    the regularizer actually pushes on
+            neg_dist = torch.norm(embeddings[i] - best_neg_proto, p=2)
+            current_neg_dist.append(neg_dist)
+
+        # -------------- regularization term ----------------
+        # current_neg_mean is kept OUTSIDE no_grad so reg_loss can backprop
+        current_neg_mean = torch.stack(current_neg_dist).mean()
+
+        with torch.no_grad():
+            current_pos_mean = torch.stack(current_pos_dist).mean()
+
+            # compute xi from the EMA state *before* updating it with this
+            # batch's stats, so the threshold doesn't leak current-batch info
+            pos_ma, neg_ma = self._bias_corrected_ma()
+            xi = (self.hyper_weight * pos_ma + (1 - self.hyper_weight) * neg_ma)
+
+            if self.training:
+                self.update_moving_average(current_pos_mean, current_neg_mean)
+
+        reg_loss = F.relu(xi - current_neg_mean)
+        # reg_loss = torch.pow(xi - current_neg_mean, 2)
+        # ----------------------------------------------------
+        # TODO: gradient flow to regularization term components' => gradient should only back propagate through current_neg_mean
+        # TODO: use all negative/positive for batch-wise mean (reg term) => currently no.
+        # TODO: use pow2 and current version => should be examined.
+
+        self.latest_xi = xi.detach()
+        self.latest_current_neg_mean = current_neg_mean.detach()
 
         if len(batch_loss) == 0:
             return torch.zeros(1, requires_grad=True).cuda()
         
         main_loss = sum(batch_loss) / B
-        loss = main_loss + reg_loss
-        # loss = sum(batch_loss) / B
+        loss = main_loss + self.reg_weight * reg_loss
 
         return loss

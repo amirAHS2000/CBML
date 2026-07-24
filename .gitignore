@@ -4,3 +4,4 @@ __pycache__
 cbml_benchmark.egg-info
 output-resnet18-cub-mpcbml
 outputs
+visualizer_reg_logs.py

@@ -1,6 +1,7 @@
 import datetime
 import time
 
+import torch.nn.functional as F
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -112,7 +113,29 @@ def do_train(
             train_recalls_over_iters.append(recall_curr_train_eval)
             val_recalls_over_iters.append(recall_curr)
 
-            if iteration in [0, 1000, 3000, 6000, 8000]:
+            if hasattr(criterion, 'global_ma_pos'):
+                with torch.no_grad():
+                    xi = getattr(criterion, 'latest_xi', None)
+                    current_neg = getattr(criterion, 'latest_current_neg_mean', None)
+
+                    reg_term = 0.0
+                    if xi is not None and current_neg is not None:
+                        # reg_term = (criterion.reg_weight * F.relu(xi - current_neg)).item()
+                        reg_term = (criterion.reg_weight * torch.pow(xi - current_neg, 2)).item()
+
+                xi_str = f"{xi:.4f}" if xi is not None else "N/A"
+                cneg_str = f"{current_neg:.4f}" if current_neg is not None else "N/A"
+
+                logger.info(
+                    f"Reg Stats | "
+                    f"global_ma_pos: {criterion.global_ma_pos:.4f} | "
+                    f"global_ma_neg: {criterion.global_ma_neg:.4f} | "
+                    f"xi (threshold): {xi_str} | "
+                    f"current_neg_mean: {cneg_str} | "
+                    f"reg_loss: {reg_term:.4f}"
+                )
+
+            if iteration in [0, 800, 1600, 2400, 3200, 4000, 4800]:
                 with torch.no_grad():
                     # shape: [C, K] -> each entry is the L2 norm of that prototype
                     proto_norms_per_dim = criterion.prototypes.norm(p=2, dim=2)
