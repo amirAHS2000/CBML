@@ -30,7 +30,7 @@ def do_train(
         model,             # Neural network model to train.
         train_loader,      # DataLoader for training data.
         val_loader,        # DataLoader for validation data.
-        eval_train_loader, # DataLoader for training data (without any augmentationsa or transformations just for recalls calculation)
+        eval_train_loader, # DataLoader for training data (without any augmentations or transformations just for recalls calculation)
         optimizer_main,         # Optimizer for updating model parameters.
         optimizer_loss,
         scheduler_main,         # Learning rate scheduler.
@@ -120,8 +120,8 @@ def do_train(
 
                     reg_term = 0.0
                     if xi is not None and current_neg is not None:
-                        # reg_term = (criterion.reg_weight * F.relu(xi - current_neg)).item()
-                        reg_term = (criterion.reg_weight * torch.pow(xi - current_neg, 2)).item()
+                        reg_term = (criterion.reg_weight * F.relu(xi - current_neg)).item()
+                        # reg_term = (criterion.reg_weight * torch.pow(xi - current_neg, 2)).item()
 
                 xi_str = f"{xi:.4f}" if xi is not None else "N/A"
                 cneg_str = f"{current_neg:.4f}" if current_neg is not None else "N/A"

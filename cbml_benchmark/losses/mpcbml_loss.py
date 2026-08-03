@@ -77,7 +77,7 @@ class MpcbmlLoss(nn.Module):
         if self.ma_step.item() == 0:
             return self.global_ma_pos, self.global_ma_neg
         correction = 1 - (self.ma_momentum ** self.ma_step.item())
-        correction = max(correction, self.eps)
+        correction = max(correction, 1e-9)
         return self.global_ma_pos / correction, self.global_ma_neg / correction
     
     @torch.no_grad()
