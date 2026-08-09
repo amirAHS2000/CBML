@@ -11,8 +11,16 @@ from cbml_benchmark.modeling import build_model
 from cbml_benchmark.solver import build_lr_scheduler, build_optimizer
 from cbml_benchmark.utils.logger import setup_logger
 from cbml_benchmark.utils.checkpoint import Checkpointer
-
-from cbml_benchmark.utils.prototype_initializer import initialize_prototypes_random, initialize_prototypes_mean, initialize_prototypes_kmeans
+from cbml_benchmark.utils.prototype_initializer import (
+    initialize_prototypes_random,
+    initialize_prototypes_mean,
+    initialize_prototypes_kmeans,
+)
+from cbml_benchmark.utils.cache_prototypes import (
+    _get_prototype_cache_path,
+    load_cached_prototypes,
+    save_prototype_cache,
+)
 
 
 def train(cfg):
@@ -29,33 +37,36 @@ def train(cfg):
 
     # initializing prototypes if using mpcbml loss
     if cfg.LOSSES.NAME == 'mpcbml_loss':
-        logger.info(f"Initializing prototypes using {cfg.LOSSES.MPCBML_LOSS.INIT_METHOD}...")
+        cached_prototypes, cached_cluster_sizes, cache_path = load_cached_prototypes(cfg)
 
-        if cfg.LOSSES.MPCBML_LOSS.INIT_METHOD == 'kmeans':
-            prototypes, cluster_sizes = initialize_prototypes_kmeans(
-                model=model,
-                cfg=cfg
-            )
-        elif cfg.LOSSES.MPCBML_LOSS.INIT_METHOD == 'mean':
-            prototypes = initialize_prototypes_mean(
-                model=model,
-                cfg=cfg
-            )
-            cluster_sizes = None  # No cluster sizes for mean init
-        elif cfg.LOSSES.MPCBML_LOSS.INIT_METHOD == 'random':
-            prototypes = initialize_prototypes_random(
-                num_classes=cfg.LOSSES.MPCBML_LOSS.N_CLASSES,
-                prototype_per_class=cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS,
-                embed_dim=cfg.MODEL.HEAD.DIM,
-                device=device
-            )
-            cluster_sizes = None  # No cluster sizes for random init
+        if cached_prototypes is not None:
+            logger.info(f"Loaded cached prototypes from {cache_path}, skipping recomputation.")
+            prototypes = cached_prototypes
+            cluster_sizes = cached_cluster_sizes
         else:
-            raise ValueError(f"Unknown initializing method: {cfg.LOSSES.MPCBML_LOSS.INIT_METHOD}")
+            logger.info(f"No cache found. Initializing prototypes using {cfg.LOSSES.MPCBML_LOSS.INIT_METHOD}...")
 
-        # Set prototypes and weights in the loss
+            if cfg.LOSSES.MPCBML_LOSS.INIT_METHOD == 'kmeans':
+                prototypes, cluster_sizes = initialize_prototypes_kmeans(model=model, cfg=cfg)
+            elif cfg.LOSSES.MPCBML_LOSS.INIT_METHOD == 'mean':
+                prototypes = initialize_prototypes_mean(model=model, cfg=cfg)
+                cluster_sizes = None
+            elif cfg.LOSSES.MPCBML_LOSS.INIT_METHOD == 'random':
+                prototypes = initialize_prototypes_random(
+                    num_classes=cfg.LOSSES.MPCBML_LOSS.N_CLASSES,
+                    prototype_per_class=cfg.LOSSES.MPCBML_LOSS.PROTOTYPE_PER_CLASS,
+                    embed_dim=cfg.MODEL.HEAD.DIM,
+                    device=device
+                )
+                cluster_sizes = None
+            else:
+                raise ValueError(f"Unknown initializing method: {cfg.LOSSES.MPCBML_LOSS.INIT_METHOD}")
+
+            _, key_dict = _get_prototype_cache_path(cfg)
+            save_prototype_cache(cache_path, key_dict, prototypes, cluster_sizes)
+            logger.info(f"Saved prototype cache to {cache_path}")
+
         criterion.set_prototypes_and_weights(prototypes, cluster_sizes)
-        # clear the orginal prototypes tensor
         del prototypes
         torch.cuda.empty_cache()
         gc.collect()
