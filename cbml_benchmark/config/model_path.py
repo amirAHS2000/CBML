@@ -6,7 +6,8 @@ MODEL_PATH = {
     'resnet50': '~/.cache/torch/hub/checkpoints/resnet50-19c8e357.pth',
     # 'resnet18': '~/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth',
     'resnet18': r'D:\Msc courses\proposal_implementation\CBML\resource\models\resnet18-f37072fd.pth',
-    'googlenet': "~/.cache/torch/hub/checkpoints/googlenet-1378be20.pth"
+    'googlenet': "~/.cache/torch/hub/checkpoints/googlenet-1378be20.pth",
+    'mobilenet_v3_small': r'D:\Msc courses\proposal_implementation\CBML\resource\models\mobilenet_v3_small.pth',
 }
 
 MODEL_PATH = CN(MODEL_PATH)

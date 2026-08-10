@@ -235,8 +235,8 @@ def do_train(
             )
 
         # Save model checkpoint periodically.
-        if iteration % checkpoint_period == 0:
-            checkpointer.save("model_{:06d}".format(iteration))
+        # if iteration % checkpoint_period == 0:
+        #     checkpointer.save("model_{:06d}".format(iteration))
 
     # ====================================================================
     # POST-TRAINING: PLOTTING
