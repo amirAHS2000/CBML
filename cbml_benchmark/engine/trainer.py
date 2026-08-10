@@ -8,22 +8,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from cbml_benchmark.data.evaluations import RetMetric
+from cbml_benchmark.data.evaluations import RetMetricGPU
 from cbml_benchmark.utils.feat_extractor import feat_extractor
 from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
 
-
-def update_ema_variables(model, ema_model):
-    """
-    Update the Exponential Moving Average (EMA) model parameters.
-    Args:
-    - model: The main model being trained.
-    - ema_model: The model used to store EMA of the parameters.
-    """
-    alpha = 0.999  # EMA smoothing coefficient.
-    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
-        # Update EMA parameters: new_ema = alpha * old_ema + (1 - alpha) * current_param
-        ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
 
 def do_train(
         cfg,               # Configuration object with training settings.
@@ -31,9 +20,9 @@ def do_train(
         train_loader,      # DataLoader for training data.
         val_loader,        # DataLoader for validation data.
         eval_train_loader, # DataLoader for training data (without any augmentations or transformations just for recalls calculation)
-        optimizer_main,         # Optimizer for updating model parameters.
+        optimizer_main,    # Optimizer for updating model parameters.
         optimizer_loss,
-        scheduler_main,         # Learning rate scheduler.
+        scheduler_main,    # Learning rate scheduler.
         scheduler_loss,
         criterion,         # Primary loss function.
         criterion_aux,     # Auxiliary loss function (if any).
@@ -76,15 +65,12 @@ def do_train(
             # Extract labels and features for validation set.
             labels = val_loader.dataset.label_list
             labels = np.array([int(k) for k in labels])
-            feats = feat_extractor(model, val_loader, logger=logger)  # Feature extraction.
+            feats = feat_extractor(model, val_loader, logger=logger, return_numpy=False)
 
             # Compute retrieval metrics (e.g., recall at K).
-            ret_metric = RetMetric(feats=feats, labels=labels)
-            recall_curr = []
-            recall_curr.append(ret_metric.recall_k(1))
-            recall_curr.append(ret_metric.recall_k(2))
-            recall_curr.append(ret_metric.recall_k(4))
-            recall_curr.append(ret_metric.recall_k(8))
+            ret_metric = RetMetricGPU(feats=feats, labels=labels, device=device)
+            recall_curr = ret_metric.recall_at_ks(ks=(1, 2, 4, 8))
+            recall_curr = [recall_curr[1], recall_curr[2], recall_curr[4], recall_curr[8]]
 
             # Log current recall metrics.
             logger.info(f'Val Recalls: {recall_curr}')
@@ -101,11 +87,13 @@ def do_train(
             # compute recalls for training set (entire training set)
             train_eval_labels = eval_train_loader.dataset.label_list
             train_eval_labels = np.array([int(k) for k in train_eval_labels])
-            train_eval_feats = feat_extractor(model, eval_train_loader, logger=logger)
+            train_eval_feats = feat_extractor(model, eval_train_loader, logger=logger, return_numpy=False)
 
             # compute retrieval metrics (e.g., recall at k) on training set
-            ret_metric_train_eval = RetMetric(feats=train_eval_feats, labels=train_eval_labels)
-            recall_curr_train_eval = [ret_metric_train_eval.recall_k(k) for k in [1, 2, 4, 8]]
+            ret_metric_train_eval = RetMetricGPU(feats=train_eval_feats, labels=train_eval_labels, device=device)
+            recall_curr_train_eval_dict = ret_metric_train_eval.recall_at_ks(ks=(1, 2, 4, 8))
+            recall_curr_train_eval = [recall_curr_train_eval_dict[k] for k in [1, 2, 4, 8]]
+            
             logger.info(f'Train Recalls: {recall_curr_train_eval}')
 
             # store for plotting
