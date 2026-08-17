@@ -1,3 +1,4 @@
+import os
 import datetime
 import time
 
@@ -128,7 +129,7 @@ def do_train(
                     # shape: [C, K] -> each entry is the L2 norm of that prototype
                     proto_norms_per_dim = criterion.prototypes.norm(p=2, dim=2)
                     np.savetxt(
-                        f'proto_norms_iter_{iteration:06d}.txt',
+                        os.path.join(cfg.SAVE_DIR, f'proto_norms_iter_{iteration:06d}.txt'),
                         proto_norms_per_dim.cpu().numpy(),
                         fmt='%.6f',
                         delimiter='\t',
@@ -138,7 +139,7 @@ def do_train(
                     # shape: [C, K] -> each entry is the weight's value corresponding to that prototype
                     weight_value_per_dim = criterion.weights
                     np.savetxt(
-                        f'weight_value_iter_{iteration:06d}.txt',
+                        os.path.join(cfg.SAVE_DIR, f'weight_value_iter_{iteration:06d}.txt'),
                         weight_value_per_dim.cpu().numpy(),
                         fmt='%.6f',
                         delimiter='\t',
@@ -249,7 +250,7 @@ def do_train(
         plt.ylabel(f'Recall@{k}')
         plt.legend()
         plt.title(f'Recall@K over Iterations (k={k})')
-        plt.savefig(f'recall_at_{k}_iter_{iteration}.png')
+        plt.savefig(os.path.join(cfg.SAVE_DIR, f'recall_at_{k}_iter_{iteration}.png'))
         plt.close()  # Close to free memory
 
     # Positive & Negative prototype usage heatmap
@@ -261,7 +262,7 @@ def do_train(
     plt.xlabel('Positive Prototype index')
     plt.ylabel('Class index')
     plt.title('Positive Prototype selection heatmap')
-    plt.savefig('positive_prototype_selection.png', dpi=150)
+    plt.savefig(os.path.join(cfg.SAVE_DIR, 'positive_prototype_selection.png'), dpi=150)
     plt.close()
 
     plt.figure(figsize=(10, 8))
@@ -269,7 +270,7 @@ def do_train(
     plt.xlabel('Negative Prototype index')
     plt.ylabel('Class index')
     plt.title('Negative Prototype selection heatmap')
-    plt.savefig('negative_prototype_selection.png', dpi=150)
+    plt.savefig(os.path.join(cfg.SAVE_DIR, 'negative_prototype_selection.png'), dpi=150)
     plt.close()
 
     # ====================================================================    
