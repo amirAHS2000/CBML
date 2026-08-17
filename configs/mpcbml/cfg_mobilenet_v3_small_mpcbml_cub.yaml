@@ -3,7 +3,7 @@ MODEL:
     NAME: mobilenet_v3_small
   PRETRAIN: imagenet
 
-SAVE_DIR: output-mobilenet-cub
+SAVE_DIR: output-mobilenet-cub-mpcbml
 
 INPUT:
   MODE: 'RGB'

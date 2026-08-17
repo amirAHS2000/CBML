@@ -1,9 +1,9 @@
 MODEL:
   BACKBONE:
     NAME: mobilenet_v3_small
-  PRETRAIN: output-mobilenet-cub/best_model.pth
+  PRETRAIN: output-mobilenet-cub-mpcbml/best_model.pth
 
-SAVE_DIR: output-mobilenet-cub
+SAVE_DIR: output-mobilenet-cub-mpcbml
 
 INPUT:
   MODE: 'RGB'
