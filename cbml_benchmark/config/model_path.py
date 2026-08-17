@@ -2,7 +2,7 @@ import os
 from yacs.config import CfgNode as CN
 
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 MODEL_PATH = {
     'bninception': os.path.join(_PROJECT_ROOT, "resource/models/bn_inception-52deb4733.pth"),
