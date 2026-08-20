@@ -221,11 +221,33 @@ class MpcbmlLoss(nn.Module):
         #   l_reg(i) = max(0, xi - d_i^-)^2
         # This penalizes each collapsed dominant negative prototype directly,
         # rather than allowing violations to cancel out through a batch mean.
-        reg_loss = torch.clamp(xi - current_neg_dist_tensor, min=0.0).pow(2).mean()
-        # ----------------------------------------------------
+        neg_violation = torch.clamp(xi - current_neg_dist_tensor, min=0.0)
+        reg_loss = neg_violation.pow(2).mean()
 
-        self.latest_xi = xi.detach()
-        self.latest_current_neg_mean = current_neg_mean.detach()
+        # Store detached monitoring statistics so the trainer can report the
+        # quantities that were actually used by the current regularizer.
+        with torch.no_grad():
+            violation_mask = neg_violation > 0
+            violation_rate = violation_mask.float().mean()
+            mean_violation = (
+                neg_violation[violation_mask].mean()
+                if violation_mask.any()
+                else torch.zeros((), device=self.device)
+            )
+            neg_min = current_neg_dist_tensor.min()
+            neg_p10 = torch.quantile(current_neg_dist_tensor, 0.10)
+
+            self.latest_xi = xi.detach()
+            self.latest_current_pos_mean = current_pos_mean.detach()
+            self.latest_current_neg_mean = current_neg_mean.detach()
+            self.latest_ema_pos = pos_ma.detach()
+            self.latest_ema_neg = neg_ma.detach()
+            self.latest_reg_loss = reg_loss.detach()
+            self.latest_weighted_reg_loss = (self.reg_weight * reg_loss).detach()
+            self.latest_neg_violation_rate = violation_rate.detach()
+            self.latest_mean_neg_violation = mean_violation.detach()
+            self.latest_neg_min = neg_min.detach()
+            self.latest_neg_p10 = neg_p10.detach()
 
         if len(batch_loss) == 0:
             return torch.zeros(1, requires_grad=True).cuda()

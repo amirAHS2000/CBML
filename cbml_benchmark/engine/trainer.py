@@ -2,7 +2,6 @@ import os
 import datetime
 import time
 
-import torch.nn.functional as F
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -49,6 +48,22 @@ def do_train(
     train_recalls_over_iters = []
     val_recalls_over_iters = []
     iters = []
+
+    # Regularization statistics collected at validation points. These values
+    # describe the latest training batch seen by MpcbmlLoss before validation.
+    reg_stats_history = {
+        "xi": [],
+        "ema_pos": [],
+        "ema_neg": [],
+        "current_pos_mean": [],
+        "current_neg_mean": [],
+        "neg_min": [],
+        "neg_p10": [],
+        "violation_rate": [],
+        "mean_violation": [],
+        "reg_loss_raw": [],
+        "reg_loss_weighted": [],
+    }
     
     # Start timers for training.
     start_training_time = time.time()
@@ -102,27 +117,66 @@ def do_train(
             train_recalls_over_iters.append(recall_curr_train_eval)
             val_recalls_over_iters.append(recall_curr)
 
-            if hasattr(criterion, 'global_ma_pos'):
-                with torch.no_grad():
-                    xi = getattr(criterion, 'latest_xi', None)
-                    current_neg = getattr(criterion, 'latest_current_neg_mean', None)
+            if hasattr(criterion, 'latest_xi'):
+                def _scalar(value):
+                    if value is None:
+                        return None
+                    if torch.is_tensor(value):
+                        return float(value.detach().cpu().item())
+                    return float(value)
 
-                    reg_term = 0.0
-                    if xi is not None and current_neg is not None:
-                        reg_term = (criterion.reg_weight * F.relu(xi - current_neg)).item()
-                        # reg_term = (criterion.reg_weight * torch.pow(xi - current_neg, 2)).item()
+                def _fmt(value, digits=4):
+                    value = _scalar(value)
+                    return f"{value:.{digits}f}" if value is not None else "N/A"
 
-                xi_str = f"{xi:.4f}" if xi is not None else "N/A"
-                cneg_str = f"{current_neg:.4f}" if current_neg is not None else "N/A"
+                # These are cached by MpcbmlLoss during the latest training
+                # batch. In particular, latest_reg_loss is the actual
+                # sample-wise squared-hinge term, not a reconstruction from
+                # the old batch-mean formulation.
+                xi = getattr(criterion, 'latest_xi', None)
+                ema_pos = getattr(criterion, 'latest_ema_pos', None)
+                ema_neg = getattr(criterion, 'latest_ema_neg', None)
+                current_pos = getattr(criterion, 'latest_current_pos_mean', None)
+                current_neg = getattr(criterion, 'latest_current_neg_mean', None)
+                reg_loss = getattr(criterion, 'latest_reg_loss', None)
+                weighted_reg_loss = getattr(criterion, 'latest_weighted_reg_loss', None)
+                violation_rate = getattr(criterion, 'latest_neg_violation_rate', None)
+                mean_violation = getattr(criterion, 'latest_mean_neg_violation', None)
+                neg_min = getattr(criterion, 'latest_neg_min', None)
+                neg_p10 = getattr(criterion, 'latest_neg_p10', None)
 
                 logger.info(
-                    f"Reg Stats | "
-                    f"global_ma_pos: {criterion.global_ma_pos:.4f} | "
-                    f"global_ma_neg: {criterion.global_ma_neg:.4f} | "
-                    f"xi (threshold): {xi_str} | "
-                    f"current_neg_mean: {cneg_str} | "
-                    f"reg_loss: {reg_term:.4f}"
+                    f"Reg Stats (latest train batch) | "
+                    f"EMA_pos: {_fmt(ema_pos)} | "
+                    f"EMA_neg: {_fmt(ema_neg)} | "
+                    f"xi: {_fmt(xi)} | "
+                    f"current_pos_mean: {_fmt(current_pos)} | "
+                    f"current_neg_mean: {_fmt(current_neg)} | "
+                    f"neg_min: {_fmt(neg_min)} | "
+                    f"neg_p10: {_fmt(neg_p10)} | "
+                    f"violation_rate: {_fmt(_scalar(violation_rate) * 100 if violation_rate is not None else None, 2)}% | "
+                    f"mean_violation: {_fmt(mean_violation)} | "
+                    f"reg_loss_raw: {_fmt(reg_loss)} | "
+                    f"reg_loss_weighted: {_fmt(weighted_reg_loss)}"
                 )
+
+                # Keep a history for post-training plots and a tab-separated
+                # record that can be analyzed independently of the logger.
+                reg_values = {
+                    "xi": _scalar(xi),
+                    "ema_pos": _scalar(ema_pos),
+                    "ema_neg": _scalar(ema_neg),
+                    "current_pos_mean": _scalar(current_pos),
+                    "current_neg_mean": _scalar(current_neg),
+                    "neg_min": _scalar(neg_min),
+                    "neg_p10": _scalar(neg_p10),
+                    "violation_rate": _scalar(violation_rate),
+                    "mean_violation": _scalar(mean_violation),
+                    "reg_loss_raw": _scalar(reg_loss),
+                    "reg_loss_weighted": _scalar(weighted_reg_loss),
+                }
+                for key, value in reg_values.items():
+                    reg_stats_history[key].append(value)
 
             if iteration in [0, 800, 1600, 2400, 3200, 4000, 4800]:
                 with torch.no_grad():
@@ -252,6 +306,45 @@ def do_train(
         plt.title(f'Recall@K over Iterations (k={k})')
         plt.savefig(os.path.join(cfg.SAVE_DIR, f'recall_at_{k}_iter_{iteration}.png'))
         plt.close()  # Close to free memory
+
+    # Regularization diagnostics
+    if reg_stats_history["xi"]:
+        reg_path = os.path.join(cfg.SAVE_DIR, f'regularization_stats_iter_{iteration}.tsv')
+        header = "iteration\t" + "\t".join(reg_stats_history.keys())
+        rows = []
+        for idx, logged_iter in enumerate(iters[-len(reg_stats_history["xi"]):]):
+            rows.append([logged_iter] + [reg_stats_history[key][idx] for key in reg_stats_history])
+        np.savetxt(reg_path, np.asarray(rows, dtype=float), delimiter='\t', fmt='%.8f', header=header, comments='')
+
+        plt.figure()
+        plt.plot(iters[-len(reg_stats_history["xi"]):], reg_stats_history["xi"], label='Threshold $\\xi$')
+        plt.plot(iters[-len(reg_stats_history["xi"]):], reg_stats_history["current_neg_mean"], label='Mean dominant negative distance')
+        plt.plot(iters[-len(reg_stats_history["xi"]):], reg_stats_history["neg_p10"], label='10th percentile negative distance')
+        plt.xlabel('Iteration')
+        plt.ylabel('Distance')
+        plt.legend()
+        plt.title('Negative-distance regularization diagnostics')
+        plt.savefig(os.path.join(cfg.SAVE_DIR, f'reg_distance_stats_iter_{iteration}.png'))
+        plt.close()
+
+        plt.figure()
+        plt.plot(iters[-len(reg_stats_history["xi"]):], [100.0 * x for x in reg_stats_history["violation_rate"]], label='Violation rate (%)')
+        plt.xlabel('Iteration')
+        plt.ylabel('Samples below threshold (%)')
+        plt.legend()
+        plt.title('Dominant negative threshold violation rate')
+        plt.savefig(os.path.join(cfg.SAVE_DIR, f'reg_violation_rate_iter_{iteration}.png'))
+        plt.close()
+
+        plt.figure()
+        plt.plot(iters[-len(reg_stats_history["xi"]):], reg_stats_history["reg_loss_raw"], label='Raw squared-hinge loss')
+        plt.plot(iters[-len(reg_stats_history["xi"]):], reg_stats_history["reg_loss_weighted"], label='Weighted regularization contribution')
+        plt.xlabel('Iteration')
+        plt.ylabel('Loss')
+        plt.legend()
+        plt.title('Regularization loss over iterations')
+        plt.savefig(os.path.join(cfg.SAVE_DIR, f'reg_loss_stats_iter_{iteration}.png'))
+        plt.close()
 
     # Positive & Negative prototype usage heatmap
     pos_proto_usage = criterion.pos_proto_counts.cpu().numpy() # [C, K]
