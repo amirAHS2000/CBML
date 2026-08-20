@@ -39,7 +39,7 @@ DATA:
   TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt
   TEST_IMG_SOURCE: resource/datasets/CUB_200_2011/test.txt
   CLASS_COUNT_SOURCE: resource/datasets/CUB_200_2011/class_counts.json
-  TRAIN_BATCHSIZE: 16
+  TRAIN_BATCHSIZE: 32
   TEST_BATCHSIZE: 64
   NUM_WORKERS: 4
   NUM_INSTANCES: 4

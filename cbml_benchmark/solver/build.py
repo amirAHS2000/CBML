@@ -4,6 +4,8 @@ from .lr_scheduler import WarmupMultiStepLR
 
 def build_optimizer(cfg, model, criterion=None, loss_param=None):
     base_lr = getattr(cfg.SOLVER, 'BASE_LR', 0.0001)
+    backbone_lr_mult = getattr(cfg.SOLVER, 'BACKBONE_LR_MULT', 0.2)
+    head_lr_mult = getattr(cfg.SOLVER, 'HEAD_LR_MULT', 1.0)
 
 
     # ---------- ADAM for model ----------
@@ -12,10 +14,10 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
         if not value.requires_grad:
             continue
         if key.startswith('backbone.'):
-            lr_mul = 0.2
+            lr_mul = backbone_lr_mult
             weight_decay = cfg.SOLVER.WEIGHT_DECAY
         elif key.startswith('headembedding.'):
-            lr_mul = 1.0
+            lr_mul = head_lr_mult
             weight_decay = cfg.SOLVER.WEIGHT_DECAY
         else:
             lr_mul = 1.0
