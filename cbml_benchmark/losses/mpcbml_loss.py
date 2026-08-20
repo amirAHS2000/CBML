@@ -200,26 +200,29 @@ class MpcbmlLoss(nn.Module):
             current_neg_dist.append(neg_dist)
 
         # -------------- regularization term ----------------
-        # current_neg_mean is kept OUTSIDE no_grad so reg_loss can backprop
-        current_neg_mean = torch.stack(current_neg_dist).mean()
+        # Keep each dominant-negative distance attached to the graph.
+        # The regularizer is applied sample-wise, while the batch mean is used
+        # only to update the global EMA statistics.
+        current_neg_dist_tensor = torch.stack(current_neg_dist)
+        current_neg_mean = current_neg_dist_tensor.mean()
 
         with torch.no_grad():
             current_pos_mean = torch.stack(current_pos_dist).mean()
 
-            # compute xi from the EMA state *before* updating it with this
-            # batch's stats, so the threshold doesn't leak current-batch info
+            # Compute xi from the EMA state *before* updating it with this
+            # batch's statistics, so the threshold does not leak current-batch info.
             pos_ma, neg_ma = self._bias_corrected_ma()
             xi = (self.hyper_weight * pos_ma + (1 - self.hyper_weight) * neg_ma)
 
             if self.training:
                 self.update_moving_average(current_pos_mean, current_neg_mean)
 
-        reg_loss = F.relu(xi - current_neg_mean)
-        # reg_loss = torch.pow(xi - current_neg_mean, 2)
+        # Sample-wise squared hinge penalty:
+        #   l_reg(i) = max(0, xi - d_i^-)^2
+        # This penalizes each collapsed dominant negative prototype directly,
+        # rather than allowing violations to cancel out through a batch mean.
+        reg_loss = torch.clamp(xi - current_neg_dist_tensor, min=0.0).pow(2).mean()
         # ----------------------------------------------------
-        # TODO: gradient flow to regularization term components' => gradient should only back propagate through current_neg_mean
-        # TODO: use all negative/positive for batch-wise mean (reg term) => currently no.
-        # TODO: use pow2 and current version => should be examined.
 
         self.latest_xi = xi.detach()
         self.latest_current_neg_mean = current_neg_mean.detach()
