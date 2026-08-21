@@ -16,6 +16,7 @@ from cbml_benchmark.utils.prototype_initializer import (
     initialize_prototypes_mean,
     initialize_prototypes_kmeans,
 )
+from cbml_benchmark.utils.reproducibility import seed_everything
 from cbml_benchmark.utils.cache_prototypes import (
     _get_prototype_cache_path,
     load_cached_prototypes,
@@ -24,8 +25,11 @@ from cbml_benchmark.utils.cache_prototypes import (
 
 
 def train(cfg):
+    seed_everything(cfg.SOLVER.RNG_SEED, deterministic=cfg.SOLVER.DETERMINISTIC)
     logger = setup_logger(name='Train', level=cfg.LOGGER.LEVEL)
     logger.info(cfg)
+    logger.info(f'Reproducibility | seed={cfg.SOLVER.RNG_SEED} | deterministic={cfg.SOLVER.DETERMINISTIC}')
+    logger.info(f'Loss configuration | lambda_reg={cfg.LOSSES.MPCBML_LOSS.LAMBDA_REG} | gamma_reg={cfg.LOSSES.MPCBML_LOSS.GAMMA_REG}')
     model = build_model(cfg)
     device = torch.device(cfg.MODEL.DEVICE)
     model.to(device)

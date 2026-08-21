@@ -112,6 +112,68 @@ class MpcbmlLoss(nn.Module):
        
         grad_w.sub_(mean_grad)
     
+    @torch.no_grad()
+    def compute_dominant_negative_stats(self, embeddings, targets, xi=None):
+        """
+        Compute dataset-level diagnostics using the exact prototype-selection
+        rule used by MPCBML. This is evaluation-only and does not modify EMA
+        state or prototype-selection counters.
+        """
+        embeddings = embeddings.to(self.device)
+        targets = targets.to(self.device).long()
+
+        z = embeddings
+        P = self.prototypes
+        C, K, D = P.shape
+        B = z.shape[0]
+
+        flat_protos = P.view(C * K, D)
+        logits = z @ flat_protos.T - 0.5 * (flat_protos.norm(p=2, dim=1) ** 2)
+        logits = logits.view(B, C, K)
+
+        weights = torch.clamp(self.weights, min=1e-9)
+        priors = torch.clamp(self.class_priors, min=1e-9)
+
+        rows = torch.arange(B, device=self.device)
+
+        # Dominant positive prototype: same selection rule as forward().
+        pos_score = logits[rows, targets, :] + torch.log(weights[targets])
+        best_pos_idx = pos_score.argmax(dim=1)
+        best_pos = P[targets, best_pos_idx]
+
+        # Dominant negative prototype: same prior + weight + score rule.
+        neg_score = logits + torch.log(weights).unsqueeze(0) + torch.log(priors).view(1, C, 1)
+        neg_score[rows, targets, :] = -torch.inf
+        flat_neg_idx = neg_score.view(B, C * K).argmax(dim=1)
+        best_neg = P.view(C * K, D)[flat_neg_idx]
+
+        pos_dist = torch.linalg.vector_norm(z - best_pos, dim=1)
+        neg_dist = torch.linalg.vector_norm(z - best_neg, dim=1)
+        gap = neg_dist - pos_dist
+
+        result = {
+            "pos_mean": pos_dist.mean(),
+            "neg_mean": neg_dist.mean(),
+            "neg_min": neg_dist.min(),
+            "neg_p05": torch.quantile(neg_dist, 0.05),
+            "neg_p10": torch.quantile(neg_dist, 0.10),
+            "gap_mean": gap.mean(),
+            "gap_p10": torch.quantile(gap, 0.10),
+        }
+
+        if xi is not None:
+            xi = xi.to(self.device) if torch.is_tensor(xi) else torch.tensor(xi, device=self.device)
+            violations = torch.clamp(xi - neg_dist, min=0.0)
+            result["violation_rate"] = (neg_dist < xi).float().mean()
+            result["mean_violation"] = (
+                violations[violations > 0].mean()
+                if (violations > 0).any()
+                else torch.zeros((), device=self.device)
+            )
+            result["reg_loss_raw"] = violations.pow(2).mean()
+
+        return {key: value.detach() for key, value in result.items()}
+
     def forward(self, embeddings, targets):
 
         assert embeddings.size(0) == targets.size(0), \
@@ -235,7 +297,13 @@ class MpcbmlLoss(nn.Module):
                 else torch.zeros((), device=self.device)
             )
             neg_min = current_neg_dist_tensor.min()
+            neg_p05 = torch.quantile(current_neg_dist_tensor, 0.05)
             neg_p10 = torch.quantile(current_neg_dist_tensor, 0.10)
+            # Positive-vs-negative distance gap for the same selected prototypes.
+            pos_dist_tensor = torch.stack(current_pos_dist)
+            gap = current_neg_dist_tensor - pos_dist_tensor
+            gap_mean = gap.mean()
+            gap_p10 = torch.quantile(gap, 0.10)
 
             self.latest_xi = xi.detach()
             self.latest_current_pos_mean = current_pos_mean.detach()
@@ -247,7 +315,10 @@ class MpcbmlLoss(nn.Module):
             self.latest_neg_violation_rate = violation_rate.detach()
             self.latest_mean_neg_violation = mean_violation.detach()
             self.latest_neg_min = neg_min.detach()
+            self.latest_neg_p05 = neg_p05.detach()
             self.latest_neg_p10 = neg_p10.detach()
+            self.latest_gap_mean = gap_mean.detach()
+            self.latest_gap_p10 = gap_p10.detach()
 
         if len(batch_loss) == 0:
             return torch.zeros(1, requires_grad=True).cuda()

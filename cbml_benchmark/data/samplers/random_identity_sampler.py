@@ -20,7 +20,7 @@ class RandomIdentitySampler(Sampler):
     - max_iters (int): The number of batches (iterations) to generate.
     """
 
-    def __init__(self, dataset, batch_size, num_instances, max_iters):
+    def __init__(self, dataset, batch_size, num_instances, max_iters, seed=1):
         """
         Initializes the sampler.
 
@@ -36,6 +36,7 @@ class RandomIdentitySampler(Sampler):
         self.num_labels_per_batch = self.batch_size // self.K  # Number of unique labels per batch (N).
         self.max_iters = max_iters  # Total number of iterations (batches).
         self.labels = list(self.label_index_dict.keys())  # List of all unique labels in the dataset.
+        self.seed = int(seed)
 
     def __len__(self):
         """
@@ -55,7 +56,7 @@ class RandomIdentitySampler(Sampler):
         """
         return f"|Sampler| iters {self.max_iters}| K {self.K}| M {self.batch_size}|"
 
-    def _prepare_batch(self):
+    def _prepare_batch(self, py_rng, np_rng):
         """
         Prepares a dictionary of indices grouped by label for batch sampling.
 
@@ -72,10 +73,10 @@ class RandomIdentitySampler(Sampler):
             
             # If there are fewer than `K` indices, oversample to meet the required count.
             if len(idxs) < self.K:
-                idxs.extend(np.random.choice(idxs, size=self.K - len(idxs), replace=True))
+                idxs.extend(np_rng.choice(idxs, size=self.K - len(idxs), replace=True))
             
             # Shuffle indices to ensure randomness.
-            random.shuffle(idxs)
+            py_rng.shuffle(idxs)
 
             # Split indices into groups of size `K` and store them in the dictionary.
             batch_idxs_dict[label] = [idxs[i * self.K: (i + 1) * self.K] for i in range(len(idxs) // self.K)]
@@ -85,6 +86,11 @@ class RandomIdentitySampler(Sampler):
         return batch_idxs_dict, avai_labels
 
     def __iter__(self):
+        # Keep sampler randomness independent from model/DataLoader RNG state so
+        # paired ablations with the same seed receive the exact same batches.
+        py_rng = random.Random(self.seed)
+        np_rng = np.random.RandomState(self.seed)
+
         """
         Iterates through the sampler to yield batches of indices.
 
@@ -92,17 +98,17 @@ class RandomIdentitySampler(Sampler):
         - A list of indices for each batch, where the batch size is `N * K`.
         """
         # Prepare the initial batches and available labels.
-        batch_idxs_dict, avai_labels = self._prepare_batch()
+        batch_idxs_dict, avai_labels = self._prepare_batch(py_rng, np_rng)
 
         for _ in range(self.max_iters):
             batch = []  # List to store indices for the current batch.
 
             # If there are not enough available labels to create a batch, reinitialize batches and labels.
             if len(avai_labels) < self.num_labels_per_batch:
-                batch_idxs_dict, avai_labels = self._prepare_batch()
+                batch_idxs_dict, avai_labels = self._prepare_batch(py_rng, np_rng)
 
             # Randomly select `N` labels for the batch.
-            selected_labels = random.sample(avai_labels, self.num_labels_per_batch)
+            selected_labels = py_rng.sample(avai_labels, self.num_labels_per_batch)
 
             # For each selected label, add `K` instances to the batch.
             for label in selected_labels:

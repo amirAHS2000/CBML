@@ -23,6 +23,7 @@ def _get_prototype_cache_path(cfg):
         "init_method": cfg.LOSSES.MPCBML_LOSS.INIT_METHOD,
         "head_dim": cfg.MODEL.HEAD.DIM,
         "crop_size": cfg.INPUT.CROP_SIZE,
+        "rng_seed": cfg.SOLVER.RNG_SEED,
     }
     key_str = json.dumps(key_dict, sort_keys=True)
     key_hash = hashlib.md5(key_str.encode()).hexdigest()[:10]
