@@ -50,25 +50,10 @@ def do_train(
     val_recalls_over_iters = []
     iters = []
 
-    # Regularization statistics collected at validation points. These values
-    # describe the latest training batch seen by MpcbmlLoss before validation.
-    reg_stats_history = {
-        "xi": [],
-        "ema_pos": [],
-        "ema_neg": [],
-        "current_pos_mean": [],
-        "current_neg_mean": [],
-        "neg_min": [],
-        "neg_p05": [],
-        "neg_p10": [],
-        "gap_mean": [],
-        "gap_p10": [],
-        "violation_rate": [],
-        "mean_violation": [],
-        "reg_loss_raw": [],
-        "reg_loss_weighted": [],
-        "main_loss": [],
-        "total_loss": [],
+    # Prototype/embedding diagnostics collected at validation points.
+    # These describe the dominant positive/negative prototype geometry
+    # on the fixed training-evaluation subset.
+    proto_stats_history = {
         "train_eval_pos_mean": [],
         "train_eval_neg_mean": [],
         "train_eval_neg_min": [],
@@ -76,11 +61,8 @@ def do_train(
         "train_eval_neg_p10": [],
         "train_eval_gap_mean": [],
         "train_eval_gap_p10": [],
-        "train_eval_violation_rate": [],
-        "train_eval_mean_violation": [],
-        "train_eval_reg_loss_raw": [],
     }
-    
+
     # Start timers for training.
     start_training_time = time.time()
     end = time.time()
@@ -135,130 +117,40 @@ def do_train(
                 train_eval_targets_tensor = torch.as_tensor(
                     train_eval_labels, device=device, dtype=torch.long
                 )
-                xi_for_eval = getattr(criterion, 'latest_xi', None)
                 train_eval_proto_stats = criterion.compute_dominant_negative_stats(
-                    train_eval_feats, train_eval_targets_tensor, xi=xi_for_eval
+                    train_eval_feats, train_eval_targets_tensor
                 )
 
-                def _float_stat(name):
+                def _scalar_stat(name):
                     value = train_eval_proto_stats.get(name)
-                    return float(value.detach().cpu().item()) if value is not None else None
-
-                def _fmt_stat(name, digits=4, percent=False):
-                    value = _float_stat(name)
                     if value is None:
-                        return "N/A"
-                    if percent:
-                        return f"{100.0 * value:.{digits}f}%"
-                    return f"{value:.{digits}f}"
+                        return np.nan
+                    if torch.is_tensor(value):
+                        return float(value.detach().cpu().item())
+                    return float(value)
 
                 logger.info(
                     'Train-Eval Proto Stats (fixed subset) | '
-                    f'pos_mean: {_fmt_stat("pos_mean")} | '
-                    f'neg_mean: {_fmt_stat("neg_mean")} | '
-                    f'neg_min: {_fmt_stat("neg_min")} | '
-                    f'neg_p05: {_fmt_stat("neg_p05")} | '
-                    f'neg_p10: {_fmt_stat("neg_p10")} | '
-                    f'gap_mean: {_fmt_stat("gap_mean")} | '
-                    f'gap_p10: {_fmt_stat("gap_p10")} | '
-                    f'violation_rate: {_fmt_stat("violation_rate", digits=2, percent=True)} | '
-                    f'mean_violation: {_fmt_stat("mean_violation")} | '
-                    f'reg_loss_raw: {_fmt_stat("reg_loss_raw", digits=6)}'
+                    f'pos_mean: {_scalar_stat("pos_mean"):.4f} | '
+                    f'neg_mean: {_scalar_stat("neg_mean"):.4f} | '
+                    f'neg_min: {_scalar_stat("neg_min"):.4f} | '
+                    f'neg_p05: {_scalar_stat("neg_p05"):.4f} | '
+                    f'neg_p10: {_scalar_stat("neg_p10"):.4f} | '
+                    f'gap_mean: {_scalar_stat("gap_mean"):.4f} | '
+                    f'gap_p10: {_scalar_stat("gap_p10"):.4f}'
                 )
+
+                for key in proto_stats_history:
+                    proto_stats_history[key].append(
+                        _scalar_stat(key.replace("train_eval_", ""))
+                    )
 
             # store for plotting
             iters.append(iteration)
             train_recalls_over_iters.append(recall_curr_train_eval)
             val_recalls_over_iters.append(recall_curr)
 
-            def _scalar(value):
-                if value is None:
-                    return None
-                if torch.is_tensor(value):
-                    return float(value.detach().cpu().item())
-                return float(value)
-
-            def _fmt(value, digits=4):
-                value = _scalar(value)
-                return f"{value:.{digits}f}" if value is not None else "N/A"
-
-            # These are cached by MpcbmlLoss during the latest training batch.
-            # At iteration 0 they are unavailable because no optimization batch
-            # has been processed yet; the TSV stores NaN for those fields.
-            xi = getattr(criterion, 'latest_xi', None)
-            ema_pos = getattr(criterion, 'latest_ema_pos', None)
-            ema_neg = getattr(criterion, 'latest_ema_neg', None)
-            current_pos = getattr(criterion, 'latest_current_pos_mean', None)
-            current_neg = getattr(criterion, 'latest_current_neg_mean', None)
-            reg_loss = getattr(criterion, 'latest_reg_loss', None)
-            weighted_reg_loss = getattr(criterion, 'latest_weighted_reg_loss', None)
-            violation_rate = getattr(criterion, 'latest_neg_violation_rate', None)
-            mean_violation = getattr(criterion, 'latest_mean_neg_violation', None)
-            neg_min = getattr(criterion, 'latest_neg_min', None)
-            neg_p05 = getattr(criterion, 'latest_neg_p05', None)
-            neg_p10 = getattr(criterion, 'latest_neg_p10', None)
-            gap_mean = getattr(criterion, 'latest_gap_mean', None)
-            gap_p10 = getattr(criterion, 'latest_gap_p10', None)
-            main_loss = getattr(criterion, 'latest_main_loss', None)
-            total_loss = getattr(criterion, 'latest_total_loss', None)
-
-            if xi is not None:
-                logger.info(
-                    f"Reg Stats (latest train batch) | "
-                    f"EMA_pos: {_fmt(ema_pos)} | "
-                    f"EMA_neg: {_fmt(ema_neg)} | "
-                    f"xi: {_fmt(xi)} | "
-                    f"current_pos_mean: {_fmt(current_pos)} | "
-                    f"current_neg_mean: {_fmt(current_neg)} | "
-                    f"neg_min: {_fmt(neg_min)} | "
-                    f"neg_p05: {_fmt(neg_p05)} | "
-                    f"neg_p10: {_fmt(neg_p10)} | "
-                    f"gap_mean: {_fmt(gap_mean)} | "
-                    f"gap_p10: {_fmt(gap_p10)} | "
-                    f"violation_rate: {_fmt(_scalar(violation_rate) * 100 if violation_rate is not None else None, 2)}% | "
-                    f"mean_violation: {_fmt(mean_violation)} | "
-                    f"main_loss: {_fmt(main_loss)} | "
-                    f"reg_loss_raw: {_fmt(reg_loss)} | "
-                    f"reg_loss_weighted: {_fmt(weighted_reg_loss)} | "
-                    f"total_loss: {_fmt(total_loss)}"
-                )
-
-            def _eval_stat(name):
-                value = train_eval_proto_stats.get(name)
-                return _scalar(value) if value is not None else np.nan
-
-            # One row is appended for every validation point, including iter 0,
-            # so iteration numbers stay aligned across every analysis column.
-            reg_values = {
-                "xi": _scalar(xi) if xi is not None else np.nan,
-                "ema_pos": _scalar(ema_pos) if ema_pos is not None else np.nan,
-                "ema_neg": _scalar(ema_neg) if ema_neg is not None else np.nan,
-                "current_pos_mean": _scalar(current_pos) if current_pos is not None else np.nan,
-                "current_neg_mean": _scalar(current_neg) if current_neg is not None else np.nan,
-                "neg_min": _scalar(neg_min) if neg_min is not None else np.nan,
-                "neg_p05": _scalar(neg_p05) if neg_p05 is not None else np.nan,
-                "neg_p10": _scalar(neg_p10) if neg_p10 is not None else np.nan,
-                "gap_mean": _scalar(gap_mean) if gap_mean is not None else np.nan,
-                "gap_p10": _scalar(gap_p10) if gap_p10 is not None else np.nan,
-                "violation_rate": _scalar(violation_rate) if violation_rate is not None else np.nan,
-                "mean_violation": _scalar(mean_violation) if mean_violation is not None else np.nan,
-                "reg_loss_raw": _scalar(reg_loss) if reg_loss is not None else np.nan,
-                "reg_loss_weighted": _scalar(weighted_reg_loss) if weighted_reg_loss is not None else np.nan,
-                "main_loss": _scalar(main_loss) if main_loss is not None else np.nan,
-                "total_loss": _scalar(total_loss) if total_loss is not None else np.nan,
-                "train_eval_pos_mean": _eval_stat("pos_mean"),
-                "train_eval_neg_mean": _eval_stat("neg_mean"),
-                "train_eval_neg_min": _eval_stat("neg_min"),
-                "train_eval_neg_p05": _eval_stat("neg_p05"),
-                "train_eval_neg_p10": _eval_stat("neg_p10"),
-                "train_eval_gap_mean": _eval_stat("gap_mean"),
-                "train_eval_gap_p10": _eval_stat("gap_p10"),
-                "train_eval_violation_rate": _eval_stat("violation_rate"),
-                "train_eval_mean_violation": _eval_stat("mean_violation"),
-                "train_eval_reg_loss_raw": _eval_stat("reg_loss_raw"),
-            }
-            for key, value in reg_values.items():
-                reg_stats_history[key].append(value)
+            # Prototype diagnostics are recorded from the fixed training-evaluation subset above.
 
             if iteration in [0, 800, 1600, 2400, 3200, 4000, 4800]:
                 with torch.no_grad():
@@ -389,11 +281,11 @@ def do_train(
         plt.savefig(os.path.join(cfg.SAVE_DIR, f'recall_at_{k}_iter_{iteration}.png'))
         plt.close()  # Close to free memory
 
-    # Comprehensive analysis table for paired ablations.
+    # Comprehensive analysis table for retrieval and prototype geometry.
     analysis_path = os.path.join(cfg.SAVE_DIR, f'training_analysis_iter_{iteration}.tsv')
     rows = []
-    reg_count = len(reg_stats_history["xi"])
-    reg_keys = list(reg_stats_history.keys())
+    stat_count = len(proto_stats_history["train_eval_pos_mean"])
+
     for idx, logged_iter in enumerate(iters):
         train_r = train_recalls_over_iters[idx]
         val_r = val_recalls_over_iters[idx]
@@ -404,11 +296,11 @@ def do_train(
             "train_r4": train_r[2], "val_r4": val_r[2], "r4_gap": train_r[2] - val_r[2],
             "train_r8": train_r[3], "val_r8": val_r[3], "r8_gap": train_r[3] - val_r[3],
         }
-        if idx < reg_count:
-            for key in reg_keys:
-                row[key] = reg_stats_history[key][idx]
+        if idx < stat_count:
+            for key in proto_stats_history:
+                row[key] = proto_stats_history[key][idx]
         else:
-            for key in reg_keys:
+            for key in proto_stats_history:
                 row[key] = np.nan
         rows.append(row)
 
@@ -423,11 +315,33 @@ def do_train(
             comments=''
         )
 
+    # Plot dominant-positive and dominant-negative distances and their gap.
+    if proto_stats_history["train_eval_pos_mean"]:
+        plt.figure()
+        plt.plot(iters, proto_stats_history["train_eval_pos_mean"], label="Mean positive distance")
+        plt.plot(iters, proto_stats_history["train_eval_neg_mean"], label="Mean dominant negative distance")
+        plt.plot(iters, proto_stats_history["train_eval_neg_p10"], label="P10 dominant negative distance")
+        plt.xlabel('Iteration')
+        plt.ylabel('Distance')
+        plt.legend()
+        plt.title('Prototype Distance Diagnostics')
+        plt.savefig(os.path.join(cfg.SAVE_DIR, f'prototype_distance_stats_iter_{iteration}.png'))
+        plt.close()
+
+        plt.figure()
+        plt.plot(iters, proto_stats_history["train_eval_gap_mean"], label=r'Mean $d^- - d^+$')
+        plt.plot(iters, proto_stats_history["train_eval_gap_p10"], label=r'P10 $d^- - d^+$')
+        plt.xlabel('Iteration')
+        plt.ylabel('Distance gap')
+        plt.legend()
+        plt.title('Positive-Negative Prototype Distance Gap')
+        plt.savefig(os.path.join(cfg.SAVE_DIR, f'prototype_distance_gap_iter_{iteration}.png'))
+        plt.close()
+
+    # Save a machine-readable summary of the most important run metadata.
     metadata = {
         "rng_seed": int(cfg.SOLVER.RNG_SEED),
         "deterministic": bool(cfg.SOLVER.DETERMINISTIC),
-        "lambda_reg": float(cfg.LOSSES.MPCBML_LOSS.LAMBDA_REG),
-        "gamma_reg": float(cfg.LOSSES.MPCBML_LOSS.GAMMA_REG),
         "backbone": cfg.MODEL.BACKBONE.NAME,
         "batch_size": int(cfg.DATA.TRAIN_BATCHSIZE),
         "num_instances": int(cfg.DATA.NUM_INSTANCES),
@@ -435,47 +349,8 @@ def do_train(
         "best_iteration": int(best_iteration),
         "best_recall_r1": float(best_recall),
     }
-    with open(os.path.join(cfg.SAVE_DIR, 'run_metadata.json'), 'w') as f:
+    with open(os.path.join(cfg.SAVE_DIR, "run_metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)
-
-    # Regularization diagnostics
-    if reg_stats_history["xi"]:
-        reg_path = os.path.join(cfg.SAVE_DIR, f'regularization_stats_iter_{iteration}.tsv')
-        header = "iteration\t" + "\t".join(reg_stats_history.keys())
-        rows = []
-        for idx, logged_iter in enumerate(iters):
-            rows.append([logged_iter] + [reg_stats_history[key][idx] for key in reg_stats_history])
-        np.savetxt(reg_path, np.asarray(rows, dtype=float), delimiter='\t', fmt='%.8f', header=header, comments='')
-
-        plt.figure()
-        plt.plot(iters, reg_stats_history["xi"], label='Threshold $\\xi$')
-        plt.plot(iters, reg_stats_history["current_neg_mean"], label='Mean dominant negative distance')
-        plt.plot(iters, reg_stats_history["neg_p10"], label='10th percentile negative distance')
-        plt.xlabel('Iteration')
-        plt.ylabel('Distance')
-        plt.legend()
-        plt.title('Negative-distance regularization diagnostics')
-        plt.savefig(os.path.join(cfg.SAVE_DIR, f'reg_distance_stats_iter_{iteration}.png'))
-        plt.close()
-
-        plt.figure()
-        plt.plot(iters, [100.0 * x if np.isfinite(x) else np.nan for x in reg_stats_history["violation_rate"]], label='Violation rate (%)')
-        plt.xlabel('Iteration')
-        plt.ylabel('Samples below threshold (%)')
-        plt.legend()
-        plt.title('Dominant negative threshold violation rate')
-        plt.savefig(os.path.join(cfg.SAVE_DIR, f'reg_violation_rate_iter_{iteration}.png'))
-        plt.close()
-
-        plt.figure()
-        plt.plot(iters, reg_stats_history["reg_loss_raw"], label='Raw squared-hinge loss')
-        plt.plot(iters, reg_stats_history["reg_loss_weighted"], label='Weighted regularization contribution')
-        plt.xlabel('Iteration')
-        plt.ylabel('Loss')
-        plt.legend()
-        plt.title('Regularization loss over iterations')
-        plt.savefig(os.path.join(cfg.SAVE_DIR, f'reg_loss_stats_iter_{iteration}.png'))
-        plt.close()
 
     # Positive & Negative prototype usage heatmap
     pos_proto_usage = criterion.pos_proto_counts.cpu().numpy() # [C, K]

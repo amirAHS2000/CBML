@@ -47,39 +47,9 @@ class MpcbmlLoss(nn.Module):
             torch.tensor(priors_list, device=self.device)
         )
 
-        # regularization term parameters
-        self.hyper_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'GAMMA_REG', 0.2)
-        self.reg_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'LAMBDA_REG', 0.3)
-        self.ma_momentum = getattr(cfg.LOSSES.MPCBML_LOSS, 'MA_MOMENTUM', 0.9)
-        self.register_buffer('global_ma_pos', torch.tensor(0.0))
-        self.register_buffer('global_ma_neg', torch.tensor(0.0))
-        # bias-correction step counter for the EMA (Adam-style warm-up fix)
-        self.register_buffer('ma_step', torch.tensor(0, dtype=torch.long))
         self.register_buffer('pos_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
         self.register_buffer('neg_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
 
-    @torch.no_grad()
-    def update_moving_average(self, current_pos_mean, current_neg_mean):
-        """
-        Update the global estimates using Exponential Moving Average (EMA).
-        No gradients flow through this update. Inputs are detached defensively
-        even though the decorator already disables grad tracking.
-        """
-        current_pos_mean = current_pos_mean.detach()
-        current_neg_mean = current_neg_mean.detach()
-
-        self.global_ma_pos = (self.ma_momentum * self.global_ma_pos + (1 - self.ma_momentum) * current_pos_mean)
-        self.global_ma_neg = (self.ma_momentum * self.global_ma_neg + (1 - self.ma_momentum) * current_neg_mean)
-        self.ma_step += 1
-
-    def _bias_corrected_ma(self):
-        """Adam-style bias correction so xi isn't badly underestimated near step 0."""
-        if self.ma_step.item() == 0:
-            return self.global_ma_pos, self.global_ma_neg
-        correction = 1 - (self.ma_momentum ** self.ma_step.item())
-        correction = max(correction, 1e-9)
-        return self.global_ma_pos / correction, self.global_ma_neg / correction
-    
     @torch.no_grad()
     def set_prototypes_and_weights(self, prototypes, cluster_sizes):
         prototypes = prototypes.to(self.device)
@@ -113,11 +83,13 @@ class MpcbmlLoss(nn.Module):
         grad_w.sub_(mean_grad)
     
     @torch.no_grad()
-    def compute_dominant_negative_stats(self, embeddings, targets, xi=None):
+    def compute_dominant_negative_stats(self, embeddings, targets):
         """
-        Compute dataset-level diagnostics using the exact prototype-selection
-        rule used by MPCBML. This is evaluation-only and does not modify EMA
-        state or prototype-selection counters.
+        Compute evaluation-only query-to-prototype geometry statistics using
+        the same positive/negative prototype-selection rules as forward().
+
+        This function does not participate in gradient computation and does not
+        modify prototype-selection counters or any training state.
         """
         embeddings = embeddings.to(self.device)
         targets = targets.to(self.device).long()
@@ -128,27 +100,52 @@ class MpcbmlLoss(nn.Module):
         B = z.shape[0]
 
         flat_protos = P.view(C * K, D)
-        logits = z @ flat_protos.T - 0.5 * (flat_protos.norm(p=2, dim=1) ** 2)
-        logits = logits.view(B, C, K)
+
+        logits = (
+            z @ flat_protos.T
+            - 0.5 * flat_protos.pow(2).sum(dim=1)
+        ).view(B, C, K)
 
         weights = torch.clamp(self.weights, min=1e-9)
         priors = torch.clamp(self.class_priors, min=1e-9)
 
         rows = torch.arange(B, device=self.device)
 
-        # Dominant positive prototype: same selection rule as forward().
-        pos_score = logits[rows, targets, :] + torch.log(weights[targets])
+        # ---------------------------------------------------------------
+        # Dominant positive prototype
+        # ---------------------------------------------------------------
+        pos_score = (
+            logits[rows, targets, :]
+            + torch.log(weights[targets])
+        )
+
         best_pos_idx = pos_score.argmax(dim=1)
         best_pos = P[targets, best_pos_idx]
 
-        # Dominant negative prototype: same prior + weight + score rule.
-        neg_score = logits + torch.log(weights).unsqueeze(0) + torch.log(priors).view(1, C, 1)
-        neg_score[rows, targets, :] = -torch.inf
-        flat_neg_idx = neg_score.view(B, C * K).argmax(dim=1)
-        best_neg = P.view(C * K, D)[flat_neg_idx]
+        # ---------------------------------------------------------------
+        # Dominant negative prototype
+        # Same selection rule as forward(), excluding the target class.
+        # ---------------------------------------------------------------
+        neg_score = (
+            logits
+            + torch.log(weights).unsqueeze(0)
+            + torch.log(priors).view(1, C, 1)
+        )
 
+        neg_score[rows, targets, :] = -torch.inf
+
+        flat_neg_idx = neg_score.view(B, C * K).argmax(dim=1)
+        best_neg = flat_protos[flat_neg_idx]
+
+        # ---------------------------------------------------------------
+        # Distances
+        # ---------------------------------------------------------------
         pos_dist = torch.linalg.vector_norm(z - best_pos, dim=1)
         neg_dist = torch.linalg.vector_norm(z - best_neg, dim=1)
+
+        # Positive-negative distance gap:
+        # positive when the dominant negative is farther than the
+        # dominant positive.
         gap = neg_dist - pos_dist
 
         result = {
@@ -161,18 +158,10 @@ class MpcbmlLoss(nn.Module):
             "gap_p10": torch.quantile(gap, 0.10),
         }
 
-        if xi is not None:
-            xi = xi.to(self.device) if torch.is_tensor(xi) else torch.tensor(xi, device=self.device)
-            violations = torch.clamp(xi - neg_dist, min=0.0)
-            result["violation_rate"] = (neg_dist < xi).float().mean()
-            result["mean_violation"] = (
-                violations[violations > 0].mean()
-                if (violations > 0).any()
-                else torch.zeros((), device=self.device)
-            )
-            result["reg_loss_raw"] = violations.pow(2).mean()
-
-        return {key: value.detach() for key, value in result.items()}
+        return {
+            key: value.detach()
+            for key, value in result.items()
+        }
 
     def forward(self, embeddings, targets):
 
@@ -200,8 +189,6 @@ class MpcbmlLoss(nn.Module):
         logits = logits.view(B, C, K)
 
         batch_loss = []
-        current_pos_dist = []
-        current_neg_dist = []
 
         for i in range(B):
             
@@ -232,9 +219,10 @@ class MpcbmlLoss(nn.Module):
             best_neg_class_idx = neg_class_indices[best_neg_class_idx_masked].item()
             best_neg_proto_idx = best_neg_proto_idx.item()
 
-            best_neg_proto = P[best_neg_class_idx, best_neg_proto_idx]
+            best_neg_proto = P[best_neg_class_idx, best_neg_proto_idx].detach()
             best_neg_weight = W[best_neg_class_idx, best_neg_proto_idx]
             best_neg_class_prior = self.class_priors[best_neg_class_idx]
+            # TODO: so the embedding network can still learn from the hard negative.
 
             self.neg_proto_counts[best_neg_class_idx, best_neg_proto_idx] += 1
 
@@ -250,80 +238,8 @@ class MpcbmlLoss(nn.Module):
 
             batch_loss.append(current_loss)
 
-            # regularization term components
-            # -- positive side: monitoring only, no gradient needed
-            with torch.no_grad():
-                pos_dist = torch.norm(embeddings[i] - best_pos_proto, p=2)
-                current_pos_dist.append(pos_dist)
-
-            # -- negative side: MUST stay attached to the graph, this is what
-            #    the regularizer actually pushes on
-            neg_dist = torch.norm(embeddings[i] - best_neg_proto, p=2)
-            current_neg_dist.append(neg_dist)
-
-        # -------------- regularization term ----------------
-        # Keep each dominant-negative distance attached to the graph.
-        # The regularizer is applied sample-wise, while the batch mean is used
-        # only to update the global EMA statistics.
-        current_neg_dist_tensor = torch.stack(current_neg_dist)
-        current_neg_mean = current_neg_dist_tensor.mean()
-
-        with torch.no_grad():
-            current_pos_mean = torch.stack(current_pos_dist).mean()
-
-            # Compute xi from the EMA state *before* updating it with this
-            # batch's statistics, so the threshold does not leak current-batch info.
-            pos_ma, neg_ma = self._bias_corrected_ma()
-            xi = (self.hyper_weight * pos_ma + (1 - self.hyper_weight) * neg_ma)
-
-            if self.training:
-                self.update_moving_average(current_pos_mean, current_neg_mean)
-
-        # Sample-wise squared hinge penalty:
-        #   l_reg(i) = max(0, xi - d_i^-)^2
-        # This penalizes each collapsed dominant negative prototype directly,
-        # rather than allowing violations to cancel out through a batch mean.
-        neg_violation = torch.clamp(xi - current_neg_dist_tensor, min=0.0)
-        reg_loss = neg_violation.pow(2).mean()
-
-        # Store detached monitoring statistics so the trainer can report the
-        # quantities that were actually used by the current regularizer.
-        with torch.no_grad():
-            violation_mask = neg_violation > 0
-            violation_rate = violation_mask.float().mean()
-            mean_violation = (
-                neg_violation[violation_mask].mean()
-                if violation_mask.any()
-                else torch.zeros((), device=self.device)
-            )
-            neg_min = current_neg_dist_tensor.min()
-            neg_p05 = torch.quantile(current_neg_dist_tensor, 0.05)
-            neg_p10 = torch.quantile(current_neg_dist_tensor, 0.10)
-            # Positive-vs-negative distance gap for the same selected prototypes.
-            pos_dist_tensor = torch.stack(current_pos_dist)
-            gap = current_neg_dist_tensor - pos_dist_tensor
-            gap_mean = gap.mean()
-            gap_p10 = torch.quantile(gap, 0.10)
-
-            self.latest_xi = xi.detach()
-            self.latest_current_pos_mean = current_pos_mean.detach()
-            self.latest_current_neg_mean = current_neg_mean.detach()
-            self.latest_ema_pos = pos_ma.detach()
-            self.latest_ema_neg = neg_ma.detach()
-            self.latest_reg_loss = reg_loss.detach()
-            self.latest_weighted_reg_loss = (self.reg_weight * reg_loss).detach()
-            self.latest_neg_violation_rate = violation_rate.detach()
-            self.latest_mean_neg_violation = mean_violation.detach()
-            self.latest_neg_min = neg_min.detach()
-            self.latest_neg_p05 = neg_p05.detach()
-            self.latest_neg_p10 = neg_p10.detach()
-            self.latest_gap_mean = gap_mean.detach()
-            self.latest_gap_p10 = gap_p10.detach()
-
         if len(batch_loss) == 0:
             return torch.zeros(1, requires_grad=True).cuda()
         
-        main_loss = sum(batch_loss) / B
-        loss = main_loss + self.reg_weight * reg_loss
-
-        return loss
+        main_loss = torch.stack(batch_loss).mean()
+        return main_loss
