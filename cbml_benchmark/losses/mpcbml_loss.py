@@ -220,9 +220,8 @@ class MpcbmlLoss(nn.Module):
             best_neg_proto_idx = best_neg_proto_idx.item()
 
             best_neg_proto = P[best_neg_class_idx, best_neg_proto_idx].detach()
-            best_neg_weight = W[best_neg_class_idx, best_neg_proto_idx]
+            best_neg_weight = W[best_neg_class_idx, best_neg_proto_idx].detach()
             best_neg_class_prior = self.class_priors[best_neg_class_idx]
-            # TODO: so the embedding network can still learn from the hard negative.
 
             self.neg_proto_counts[best_neg_class_idx, best_neg_proto_idx] += 1
 

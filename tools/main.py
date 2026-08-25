@@ -29,7 +29,6 @@ def train(cfg):
     logger = setup_logger(name='Train', level=cfg.LOGGER.LEVEL)
     logger.info(cfg)
     logger.info(f'Reproducibility | seed={cfg.SOLVER.RNG_SEED} | deterministic={cfg.SOLVER.DETERMINISTIC}')
-    logger.info(f'Loss configuration | lambda_reg={cfg.LOSSES.MPCBML_LOSS.LAMBDA_REG} | gamma_reg={cfg.LOSSES.MPCBML_LOSS.GAMMA_REG}')
     model = build_model(cfg)
     device = torch.device(cfg.MODEL.DEVICE)
     model.to(device)
