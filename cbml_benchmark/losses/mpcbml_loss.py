@@ -135,6 +135,8 @@ class MpcbmlLoss(nn.Module):
         neg_score[rows, targets, :] = -torch.inf
 
         flat_neg_idx = neg_score.view(B, C * K).argmax(dim=1)
+        best_neg_class_idx = flat_neg_idx // K
+        best_neg_proto_idx = flat_neg_idx % K
         best_neg = flat_protos[flat_neg_idx]
 
         # ---------------------------------------------------------------
@@ -148,6 +150,29 @@ class MpcbmlLoss(nn.Module):
         # dominant positive.
         gap = neg_dist - pos_dist
 
+        # ---------------------------------------------------------------
+        # Full softplus argument and "gate" (sigmoid of that argument),
+        # exactly matching forward()'s loss term. gate == softplus'(x),
+        # i.e. the multiplier on the gradient magnitude flowing into the
+        # winning positive prototype this step. gate near 1 means samples
+        # are still far from the margin (large steps); gate near 0 means
+        # the margin is basically satisfied (steps have mostly died out).
+        # Useful for correlating LR * gate * beta against prototype-norm
+        # shrinkage over training.
+        # ---------------------------------------------------------------
+        beta = torch.exp(self.theta)
+        best_pos_weight = weights[targets, best_pos_idx]
+        best_neg_weight = weights[best_neg_class_idx, best_neg_proto_idx]
+        pos_priors_b = priors[targets]
+        best_neg_priors_b = priors[best_neg_class_idx]
+
+        softplus_arg = (
+            (torch.log(best_neg_priors_b) - torch.log(pos_priors_b))
+            + (torch.log(best_neg_weight) - torch.log(best_pos_weight))
+            + beta * 0.5 * (pos_dist.pow(2) - neg_dist.pow(2))
+        )
+        gate = torch.sigmoid(softplus_arg)
+
         result = {
             "pos_mean": pos_dist.mean(),
             "neg_mean": neg_dist.mean(),
@@ -156,6 +181,9 @@ class MpcbmlLoss(nn.Module):
             "neg_p10": torch.quantile(neg_dist, 0.10),
             "gap_mean": gap.mean(),
             "gap_p10": torch.quantile(gap, 0.10),
+            "gate_mean": gate.mean(),
+            "gate_p90": torch.quantile(gate, 0.90),
+            "proto_norm_mean": P.norm(p=2, dim=2).mean(),
         }
 
         return {
@@ -188,57 +216,75 @@ class MpcbmlLoss(nn.Module):
         logits = z @ flat_protos.T - 0.5 * (flat_protos.norm(p=2, dim=1) ** 2) # [B, C * K]
         logits = logits.view(B, C, K)
 
-        batch_loss = []
+        rows = torch.arange(B, device=self.device)
 
-        for i in range(B):
-            
-            target_class = targets[i].item()
-            pos_weights = W[target_class] # [K]
-            pos_priors = self.class_priors[target_class] # [1]
-            pos_score = torch.log(pos_weights) + logits[i, target_class, :]
+        # --------------------------------------------------------------
+        # Selection: argmax is non-differentiable regardless, so do it
+        # under no_grad on detached copies. This avoids building an
+        # unused autograd graph for pos_score/neg_score, and matches
+        # the pattern already used in compute_dominant_negative_stats().
+        # --------------------------------------------------------------
+        with torch.no_grad():
+            W_det = W.detach()
+            logits_det = logits.detach()
+            log_W = torch.log(torch.clamp(W_det, min=eps))
+            log_priors = torch.log(torch.clamp(self.class_priors, min=eps))
 
-            best_pos_proto_idx = torch.argmax(pos_score).item()
-            best_pos_proto = P[target_class, best_pos_proto_idx]
-            best_pos_weight = W[target_class, best_pos_proto_idx]
+            # positive selection: best prototype within the target class
+            pos_score = logits_det[rows, targets, :] + log_W[targets]  # [B, K]
+            best_pos_proto_idx = pos_score.argmax(dim=1)  # [B]
 
-            self.pos_proto_counts[target_class, best_pos_proto_idx] += 1
+            # negative selection: best (class, prototype) among all other classes
+            neg_score = (
+                logits_det
+                + log_W.unsqueeze(0)
+                + log_priors.view(1, C, 1)
+            )  # [B, C, K]
+            neg_score[rows, targets, :] = -torch.inf
 
-            # negative selection
-            neg_mask = torch.arange(C, device=self.device) != target_class
-            neg_class_indices = torch.where(neg_mask)[0] # absolute class indices
+            flat_neg_idx = neg_score.view(B, C * K).argmax(dim=1)  # [B]
+            best_neg_class_idx = flat_neg_idx // K
+            best_neg_proto_idx = flat_neg_idx % K
 
-            neg_weights = W[neg_mask] # [C - 1, K]
-            neg_priors = self.class_priors[neg_mask] # [C - 1]
-            neg_score = torch.log(neg_priors.unsqueeze(1)) + torch.log(neg_weights) + logits[i, neg_mask, :]
-
-            flat_max_idx = torch.argmax(neg_score)
-            best_neg_class_idx_masked = flat_max_idx // K
-            best_neg_proto_idx = flat_max_idx % K
-            
-            # map back to absolute class index
-            best_neg_class_idx = neg_class_indices[best_neg_class_idx_masked].item()
-            best_neg_proto_idx = best_neg_proto_idx.item()
-
-            best_neg_proto = P[best_neg_class_idx, best_neg_proto_idx].detach()
-            best_neg_weight = W[best_neg_class_idx, best_neg_proto_idx].detach()
-            best_neg_class_prior = self.class_priors[best_neg_class_idx]
-
-            self.neg_proto_counts[best_neg_class_idx, best_neg_proto_idx] += 1
-
-            current_loss = F.softplus(
-                (torch.log(best_neg_class_prior) - torch.log(pos_priors)) +
-                (torch.log(best_neg_weight) - torch.log(best_pos_weight)) +
-                (beta * ((embeddings[i] @ best_neg_proto) -
-                         ((1/2) * (best_neg_proto @ best_neg_proto)) -
-                         (embeddings[i] @ best_pos_proto) +
-                         ((1/2) * (best_pos_proto @ best_pos_proto))
-                         ))
+            # Accumulate selection counts. Must use accumulate=True: plain
+            # fancy-index += silently drops duplicate (class, k) hits when
+            # two samples in the same batch pick the same slot.
+            self.pos_proto_counts.index_put_(
+                (targets, best_pos_proto_idx),
+                torch.ones_like(targets, dtype=self.pos_proto_counts.dtype),
+                accumulate=True,
+            )
+            self.neg_proto_counts.index_put_(
+                (best_neg_class_idx, best_neg_proto_idx),
+                torch.ones_like(best_neg_class_idx, dtype=self.neg_proto_counts.dtype),
+                accumulate=True,
             )
 
-            batch_loss.append(current_loss)
+        # --------------------------------------------------------------
+        # Gather selected components. Positive stays attached to the live
+        # graph (P, W); negative is detached, matching the original design.
+        # --------------------------------------------------------------
+        best_pos_proto = P[targets, best_pos_proto_idx]      # [B, D], grad-enabled
+        best_pos_weight = W[targets, best_pos_proto_idx]     # [B],    grad-enabled
+        pos_priors = self.class_priors[targets]              # [B]
 
-        if len(batch_loss) == 0:
-            return torch.zeros(1, requires_grad=True).cuda()
-        
-        main_loss = torch.stack(batch_loss).mean()
+        best_neg_proto = P[best_neg_class_idx, best_neg_proto_idx].detach()   # [B, D]
+        best_neg_weight = W[best_neg_class_idx, best_neg_proto_idx].detach()  # [B]
+        best_neg_class_prior = self.class_priors[best_neg_class_idx]          # [B]
+
+        current_loss = F.softplus(
+            (torch.log(best_neg_class_prior) - torch.log(pos_priors)) +
+            (torch.log(best_neg_weight) - torch.log(best_pos_weight)) +
+            beta * (
+                (embeddings * best_neg_proto).sum(dim=1)
+                - 0.5 * (best_neg_proto * best_neg_proto).sum(dim=1)
+                - (embeddings * best_pos_proto).sum(dim=1)
+                + 0.5 * (best_pos_proto * best_pos_proto).sum(dim=1)
+            )
+        )
+
+        if current_loss.numel() == 0:
+            return torch.zeros(1, requires_grad=True, device=self.device)
+
+        main_loss = current_loss.mean()
         return main_loss

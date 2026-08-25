@@ -61,7 +61,61 @@ def do_train(
         "train_eval_neg_p10": [],
         "train_eval_gap_mean": [],
         "train_eval_gap_p10": [],
+        "train_eval_gate_mean": [],
+        "train_eval_gate_p90": [],
+        "train_eval_proto_norm_mean": [],
     }
+
+    # Running snapshot of cumulative selection counters, used below to log
+    # *incremental* (this-interval) win counts rather than only cumulative
+    # totals -- needed to tell whether norm shrinkage tracks recent win
+    # frequency or is spread uniformly across training.
+    prev_pos_counts = None
+    prev_neg_counts = None
+
+    # --- Diagnostic file setup -------------------------------------------
+    # Cadence: cheap scalar diagnostics are logged every validation point
+    # (VALIDATION.VERBOSE). The heavier (C, K)-shaped matrix snapshots are
+    # only taken every Nth validation point, to keep output volume down.
+    # (5000 iters / VERBOSE=200 = 25 validation points; stride 3 -> ~9 matrix
+    # snapshots total instead of 25, while every value is still a full
+    # dense C*K matrix.)
+    MATRIX_SNAPSHOT_EVERY_N_VALIDATIONS = 3
+    validation_count = 0
+
+    # Single running TSV, appended one row per validation point and flushed
+    # immediately, so it's a) always a single file to send, and b) intact
+    # even if the run is interrupted (unlike the end-of-training summary
+    # table further below, which is only written once at the very end).
+    scalar_diag_path = os.path.join(cfg.SAVE_DIR, 'scalar_diagnostics.tsv')
+    scalar_diag_columns = [
+        'iteration', 'train_r1', 'train_r2', 'train_r4', 'train_r8',
+        'val_r1', 'val_r2', 'val_r4', 'val_r8',
+        'pos_mean', 'neg_mean', 'neg_min', 'neg_p05', 'neg_p10',
+        'gap_mean', 'gap_p10', 'gate_mean', 'proto_norm_mean',
+        'proto_lr', 'proto_momentum_norm',
+    ]
+    with open(scalar_diag_path, 'w') as f:
+        f.write('\t'.join(scalar_diag_columns) + '\n')
+
+    # Consolidated, append-only files for the (C, K)-shaped matrix snapshots.
+    # One file per metric for the whole run, instead of one file per
+    # iteration per metric -- much easier to zip and send.
+    proto_norms_path = os.path.join(cfg.SAVE_DIR, 'proto_norms_history.txt')
+    weight_values_path = os.path.join(cfg.SAVE_DIR, 'weight_values_history.txt')
+    pos_wins_delta_path = os.path.join(cfg.SAVE_DIR, 'pos_wins_delta_history.txt')
+    neg_wins_delta_path = os.path.join(cfg.SAVE_DIR, 'neg_wins_delta_history.txt')
+    class_embed_norm_path = os.path.join(cfg.SAVE_DIR, 'class_embed_mean_norm_history.txt')
+    for p in (proto_norms_path, weight_values_path, pos_wins_delta_path,
+              neg_wins_delta_path, class_embed_norm_path):
+        open(p, 'w').close()  # truncate/create fresh at the start of this run
+
+    def _append_matrix_snapshot(path, iteration, array, fmt='%.6f'):
+        """Append one snapshot as a '# iteration N' header line followed by
+        the array block, to a single running file for that metric."""
+        with open(path, 'a') as f:
+            f.write(f'# iteration {iteration}\n')
+            np.savetxt(f, np.atleast_2d(array), fmt=fmt, delimiter='\t')
 
     # Start timers for training.
     start_training_time = time.time()
@@ -121,14 +175,19 @@ def do_train(
                     train_eval_feats, train_eval_targets_tensor
                 )
 
-                def _scalar_stat(name):
-                    value = train_eval_proto_stats.get(name)
-                    if value is None:
-                        return np.nan
-                    if torch.is_tensor(value):
-                        return float(value.detach().cpu().item())
-                    return float(value)
+            # Defined unconditionally (not just inside the hasattr branch)
+            # since it's also used below for the scalar-diagnostics TSV row;
+            # safely returns NaN if the criterion has no diagnostics or is
+            # missing a given key.
+            def _scalar_stat(name):
+                value = train_eval_proto_stats.get(name)
+                if value is None:
+                    return np.nan
+                if torch.is_tensor(value):
+                    return float(value.detach().cpu().item())
+                return float(value)
 
+            if train_eval_proto_stats:
                 logger.info(
                     'Train-Eval Proto Stats (fixed subset) | '
                     f'pos_mean: {_scalar_stat("pos_mean"):.4f} | '
@@ -137,7 +196,10 @@ def do_train(
                     f'neg_p05: {_scalar_stat("neg_p05"):.4f} | '
                     f'neg_p10: {_scalar_stat("neg_p10"):.4f} | '
                     f'gap_mean: {_scalar_stat("gap_mean"):.4f} | '
-                    f'gap_p10: {_scalar_stat("gap_p10"):.4f}'
+                    f'gap_p10: {_scalar_stat("gap_p10"):.4f} | '
+                    f'gate_mean: {_scalar_stat("gate_mean"):.4f} | '
+                    f'gate_p90: {_scalar_stat("gate_p90"):.4f} | '
+                    f'proto_norm_mean: {_scalar_stat("proto_norm_mean"):.4f}'
                 )
 
                 for key in proto_stats_history:
@@ -150,31 +212,81 @@ def do_train(
             train_recalls_over_iters.append(recall_curr_train_eval)
             val_recalls_over_iters.append(recall_curr)
 
-            # Prototype diagnostics are recorded from the fixed training-evaluation subset above.
+            # --------------------------------------------------------------
+            # Prototype-optimizer LR and momentum-buffer norm (computed every
+            # validation point since it's essentially free -- no forward pass
+            # needed). Checks whether momentum=0.9 is compounding consecutive
+            # shrink steps.
+            # --------------------------------------------------------------
+            proto_lr, mom_norm = float('nan'), float('nan')
+            if optimizer_loss is not None:
+                for g in optimizer_loss.param_groups:
+                    if any(p is criterion.prototypes for p in g['params']):
+                        proto_lr = g['lr']
+                        state = optimizer_loss.state.get(criterion.prototypes, {})
+                        mom_buf = state.get('momentum_buffer', None)
+                        mom_norm = float(mom_buf.norm(p=2).item()) if mom_buf is not None else float('nan')
+                        break
 
-            if iteration in [0, 800, 1600, 2400, 3200, 4000, 4800]:
+            # --------------------------------------------------------------
+            # Append one row to the running scalar-diagnostics TSV. This is
+            # the single file to send back for the gate/LR/momentum vs.
+            # proto-norm-mean analysis -- cheap enough to write every
+            # validation point, no cadence reduction needed here.
+            # --------------------------------------------------------------
+            with open(scalar_diag_path, 'a') as f:
+                row = [
+                    iteration,
+                    recall_curr_train_eval[0], recall_curr_train_eval[1],
+                    recall_curr_train_eval[2], recall_curr_train_eval[3],
+                    recall_curr[0], recall_curr[1], recall_curr[2], recall_curr[3],
+                    _scalar_stat("pos_mean"), _scalar_stat("neg_mean"), _scalar_stat("neg_min"),
+                    _scalar_stat("neg_p05"), _scalar_stat("neg_p10"),
+                    _scalar_stat("gap_mean"), _scalar_stat("gap_p10"),
+                    _scalar_stat("gate_mean"), _scalar_stat("proto_norm_mean"),
+                    proto_lr, mom_norm,
+                ]
+                f.write('\t'.join(f'{v:.6f}' if isinstance(v, float) else str(v) for v in row) + '\n')
+
+            # --------------------------------------------------------------
+            # Heavier (C, K)-shaped matrix snapshots: only every Nth
+            # validation point, appended into single running files per
+            # metric (not one file per iteration).
+            # --------------------------------------------------------------
+            validation_count += 1
+            if validation_count % MATRIX_SNAPSHOT_EVERY_N_VALIDATIONS == 0 or iteration == max_iter:
                 with torch.no_grad():
-                    # shape: [C, K] -> each entry is the L2 norm of that prototype
                     proto_norms_per_dim = criterion.prototypes.norm(p=2, dim=2)
-                    np.savetxt(
-                        os.path.join(cfg.SAVE_DIR, f'proto_norms_iter_{iteration:06d}.txt'),
-                        proto_norms_per_dim.cpu().numpy(),
-                        fmt='%.6f',
-                        delimiter='\t',
-                        header=f'Prototype L2 norms at iteration {iteration}'
-                    )
+                    _append_matrix_snapshot(proto_norms_path, iteration, proto_norms_per_dim.cpu().numpy())
 
-                    # shape: [C, K] -> each entry is the weight's value corresponding to that prototype
                     weight_value_per_dim = criterion.weights
-                    np.savetxt(
-                        os.path.join(cfg.SAVE_DIR, f'weight_value_iter_{iteration:06d}.txt'),
-                        weight_value_per_dim.cpu().numpy(),
-                        fmt='%.6f',
-                        delimiter='\t',
-                        header=f"Weight's value at iteration {iteration}"
-                    )
-                    
-                    logger.info(f"Saved prototype/weight snapshots at iteration {iteration}")
+                    _append_matrix_snapshot(weight_values_path, iteration, weight_value_per_dim.cpu().numpy())
+
+                    # Incremental (this-interval, not cumulative) win counts.
+                    # Lets you check whether a prototype's norm shrinkage lines
+                    # up with *recent* win frequency/rate rather than total
+                    # wins since training started.
+                    curr_pos_counts = criterion.pos_proto_counts.cpu().numpy()
+                    curr_neg_counts = criterion.neg_proto_counts.cpu().numpy()
+                    delta_pos_counts = curr_pos_counts if prev_pos_counts is None else curr_pos_counts - prev_pos_counts
+                    delta_neg_counts = curr_neg_counts if prev_neg_counts is None else curr_neg_counts - prev_neg_counts
+                    _append_matrix_snapshot(pos_wins_delta_path, iteration, delta_pos_counts, fmt='%d')
+                    _append_matrix_snapshot(neg_wins_delta_path, iteration, delta_neg_counts, fmt='%d')
+                    prev_pos_counts, prev_neg_counts = curr_pos_counts, curr_neg_counts
+
+                    # Per-class mean-embedding norm on the fixed train-eval
+                    # subset. Tests the "prototype norm tracks its assigned
+                    # cluster's mean embedding norm" explanation.
+                    num_classes = criterion.num_classes
+                    class_mean_norms = np.full(num_classes, np.nan, dtype=np.float64)
+                    feats_np = train_eval_feats.detach().cpu().numpy()
+                    for c in range(num_classes):
+                        mask = train_eval_labels == c
+                        if mask.any():
+                            class_mean_norms[c] = np.linalg.norm(feats_np[mask].mean(axis=0))
+                    _append_matrix_snapshot(class_embed_norm_path, iteration, class_mean_norms)
+
+                logger.info(f"Saved matrix snapshots (proto norms/weights/win-deltas/class norms) at iteration {iteration}")
 
         # ====================================================================
         # TRAINING STEP
