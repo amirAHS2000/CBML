@@ -47,8 +47,8 @@ class MpcbmlLoss(nn.Module):
             torch.tensor(priors_list, device=self.device)
         )
 
-        self.register_buffer('pos_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
-        self.register_buffer('neg_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
+        self.register_buffer('pos_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long, device=self.device))
+        self.register_buffer('neg_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long, device=self.device))
 
     @torch.no_grad()
     def set_prototypes_and_weights(self, prototypes, cluster_sizes):
@@ -196,9 +196,8 @@ class MpcbmlLoss(nn.Module):
         assert embeddings.size(0) == targets.size(0), \
             f"feats.size(0): {embeddings.size(0)} is not equal to labels.size(0): {targets.size(0)}"
 
-        if embeddings.device != self.prototypes.device:
-            embeddings = embeddings.to(self.device)
-            targets = targets.to(self.device)
+        embeddings = embeddings.to(self.device)
+        targets = targets.to(self.device)
 
         z = embeddings # [B, D]
         P = self.prototypes # [C, K, D]
