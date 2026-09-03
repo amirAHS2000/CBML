@@ -47,6 +47,18 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
                 'momentum': 0.9,              # pure SGD, no momentum
                 'weight_decay': 0.0
             })
+        # Negative prototypes (dedicated, decoupled from Prototypes above --
+        # see mpcbml_loss.py). Defaults to the same LR/momentum as
+        # Prototypes since they're the same kind of object; override with
+        # cfg.SOLVER.NEG_PROTOTYPE_LR if they need independent tuning.
+        if hasattr(criterion, 'neg_prototypes') and criterion.neg_prototypes.requires_grad:
+            neg_proto_lr = getattr(cfg.SOLVER, 'NEG_PROTOTYPE_LR', base_lr * 1000.0)
+            loss_params.append({
+                'params': [criterion.neg_prototypes],
+                'lr': neg_proto_lr,
+                'momentum': 0.9,
+                'weight_decay': 0.0
+            })
         # Theta
         if hasattr(criterion, 'theta') and criterion.theta.requires_grad:
             loss_params.append({
