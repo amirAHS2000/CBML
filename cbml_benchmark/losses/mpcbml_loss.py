@@ -33,27 +33,15 @@ class MpcbmlLoss(nn.Module):
             torch.zeros(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
         )
 
-        # Dedicated negative prototypes [C, K, D], structurally separate from
-        # `self.prototypes`. A class's positive prototypes are shaped only by
-        # that class's own data (via positive selection in forward()); a
-        # class's negative prototypes are shaped only by whichever *other*
-        # classes' data selects them as a hard negative. The two tensors
-        # never share gradients, so a class's own representative is never
-        # dragged around by its role as someone else's negative anchor.
-        # (Zarei-Sabzevar et al., "Prototype-Based Interpretation of the
-        # Functionality of Neurons in Winner-Take-All Neural Networks",
-        # TNNLS 2022 -- the +-ED-WTA model.)
-        #
-        # There's no existing KMeans-based initializer for this tensor (only
-        # `self.prototypes` is populated externally via
-        # set_prototypes_and_weights), so it starts from small random values,
-        # scaled so its initial squared norm is ~1 -- the same rough scale as
-        # unit-normalized embeddings and KMeans-initialized prototypes.
-        self.neg_prototypes = nn.Parameter(
-            torch.randn(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
-            / (self.embed_dim ** 0.5)
-        )
-       
+        # NOTE: there is no learned negative-prototype tensor in this version.
+        # The negative side of the loss is sourced directly from real batch
+        # embeddings (in-batch hardest-negative mining), matching the base
+        # Contrastive Bayesian Analysis (CBA/CBML) construction this loss was
+        # extended from. See forward() for the selection logic. A prior
+        # iteration of this file used a dedicated `neg_prototypes` parameter
+        # (Zarei-Sabzevar et al., TNNLS 2022, +-ED-WTA); that approach is not
+        # used here, but is a reasonable alternative to revisit later.
+
         # Mixture weights [C, K]
         # Be updated with Lagrange Multiplier
         self.weights = nn.Parameter(
@@ -69,6 +57,10 @@ class MpcbmlLoss(nn.Module):
         )
 
         self.register_buffer('pos_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long, device=self.device))
+        # `neg_proto_counts` is kept (unincremented) only so existing
+        # trainer.py diagnostic/logging code that reads it doesn't break.
+        # There is no (class, k) negative-prototype slot anymore -- negatives
+        # are individual data points now, see forward().
         self.register_buffer('neg_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long, device=self.device))
 
     @torch.no_grad()
@@ -119,21 +111,14 @@ class MpcbmlLoss(nn.Module):
 
         z = embeddings
         P = self.prototypes
-        Q = self.neg_prototypes
         C, K, D = P.shape
         B = z.shape[0]
 
         flat_P = P.view(C * K, D)
-        flat_Q = Q.view(C * K, D)
 
         pos_logits = (
             z @ flat_P.T
             - 0.5 * flat_P.pow(2).sum(dim=1)
-        ).view(B, C, K)
-
-        neg_logits = (
-            z @ flat_Q.T
-            - 0.5 * flat_Q.pow(2).sum(dim=1)
         ).view(B, C, K)
 
         weights = torch.clamp(self.weights, min=1e-9)
@@ -153,27 +138,34 @@ class MpcbmlLoss(nn.Module):
         best_pos = P[targets, best_pos_idx]
 
         # ---------------------------------------------------------------
-        # Dominant negative prototype (from Q)
-        # Same selection rule as forward(), excluding the target class.
+        # Dominant negative: hardest other-class sample within this same
+        # set of embeddings, mirroring forward()'s in-batch mining exactly
+        # (here "batch" is the full fixed train-eval subset, size B ~ a
+        # few thousand for CUB -- an [B, B] similarity matrix is a few tens
+        # of MB, not a memory concern at this scale).
         # ---------------------------------------------------------------
-        neg_score = (
-            neg_logits
-            + torch.log(weights).unsqueeze(0)
-            + torch.log(priors).view(1, C, 1)
-        )
+        z_sq_norm = (z * z).sum(dim=1)  # [B]
+        data_logits = z @ z.T - 0.5 * z_sq_norm.unsqueeze(0)  # [B, B]
 
-        neg_score[rows, targets, :] = -torch.inf
+        neg_score = data_logits + torch.log(priors[targets]).unsqueeze(0)  # [B, B]
+        same_class_mask = targets.unsqueeze(1) == targets.unsqueeze(0)  # [B, B]
+        neg_score = neg_score.masked_fill(same_class_mask, float('-inf'))
 
-        flat_neg_idx = neg_score.view(B, C * K).argmax(dim=1)
-        best_neg_class_idx = flat_neg_idx // K
-        best_neg_proto_idx = flat_neg_idx % K
-        best_neg = flat_Q[flat_neg_idx]
+        best_neg_idx = neg_score.argmax(dim=1)  # [B]
+        valid_neg = (~same_class_mask).any(dim=1)  # [B]
+        best_neg = z[best_neg_idx]
+        best_neg_class = targets[best_neg_idx]
 
         # ---------------------------------------------------------------
         # Distances
         # ---------------------------------------------------------------
         pos_dist = torch.linalg.vector_norm(z - best_pos, dim=1)
         neg_dist = torch.linalg.vector_norm(z - best_neg, dim=1)
+
+        # Restrict all stats below to rows that actually had a valid
+        # negative candidate.
+        pos_dist = pos_dist[valid_neg]
+        neg_dist = neg_dist[valid_neg]
 
         # Positive-negative distance gap:
         # positive when the dominant negative is farther than the
@@ -189,14 +181,13 @@ class MpcbmlLoss(nn.Module):
         # the margin is basically satisfied (steps have mostly died out).
         # ---------------------------------------------------------------
         beta = torch.exp(self.theta)
-        best_pos_weight = weights[targets, best_pos_idx]
-        best_neg_weight = weights[best_neg_class_idx, best_neg_proto_idx]
-        pos_priors_b = priors[targets]
-        best_neg_priors_b = priors[best_neg_class_idx]
+        best_pos_weight = weights[targets, best_pos_idx][valid_neg]
+        pos_priors_b = priors[targets][valid_neg]
+        best_neg_priors_b = priors[best_neg_class][valid_neg]
 
         softplus_arg = (
             (torch.log(best_neg_priors_b) - torch.log(pos_priors_b))
-            + (torch.log(best_neg_weight) - torch.log(best_pos_weight))
+            + (-torch.log(best_pos_weight))  # negative side has no mixture weight
             + beta * 0.5 * (pos_dist.pow(2) - neg_dist.pow(2))
         )
         gate = torch.sigmoid(softplus_arg)
@@ -228,9 +219,8 @@ class MpcbmlLoss(nn.Module):
         targets = targets.to(self.device)
 
         z = embeddings # [B, D]
-        P = self.prototypes     # [C, K, D] -- positive prototypes
-        Q = self.neg_prototypes # [C, K, D] -- dedicated negative prototypes
-        W = self.weights # [C, K] -- shared mixture weights for both roles
+        P = self.prototypes # [C, K, D] -- positive prototypes only
+        W = self.weights # [C, K]
         B = z.shape[0] # batch size
         C = self.num_classes
         K = self.prototype_per_class
@@ -242,85 +232,83 @@ class MpcbmlLoss(nn.Module):
         pos_logits_full = z @ flat_P.T - 0.5 * (flat_P.norm(p=2, dim=1) ** 2)
         pos_logits_full = pos_logits_full.view(B, C, K)
 
-        # Negative-side similarities [B, C, K], computed from the SEPARATE Q
-        # tensor. This is the key structural change from the previous
-        # detach-based version: negative selection never touches P at all,
-        # so a class's own positive prototypes are only ever shaped by that
-        # class's own data.
-        flat_Q = Q.view(C * K, -1)
-        neg_logits_full = z @ flat_Q.T - 0.5 * (flat_Q.norm(p=2, dim=1) ** 2)
-        neg_logits_full = neg_logits_full.view(B, C, K)
-
         rows = torch.arange(B, device=self.device)
 
         # --------------------------------------------------------------
-        # Selection: argmax is non-differentiable regardless, so do it
-        # under no_grad on detached copies.
+        # Negative side: instead of a learned per-class negative prototype,
+        # use the hardest *real* data point in this batch belonging to a
+        # different class (in-batch hard-negative mining). This matches the
+        # base Contrastive Bayesian Analysis (CBML) construction: no
+        # separate negative-prototype parameter exists, so there is nothing
+        # for `prototypes` to be "corrupted" by, and gradient flows back
+        # into the network through whichever sample gets selected, exactly
+        # as with a standard triplet/contrastive hard-negative term.
+        #
+        # Pairwise similarity uses the same squared-Euclidean expansion as
+        # the positive side, just with another embedding z_j in place of a
+        # prototype p: z_i . z_j - 0.5||z_j||^2. There is no per-sample
+        # mixture weight (a raw data point isn't one of K slots), so the
+        # log(weight) term is simply omitted (equivalent to weight=1) on the
+        # negative side only.
         # --------------------------------------------------------------
+        z_sq_norm = (z * z).sum(dim=1)  # [B], ~1 for each row if z is unit-normalized
+        data_logits = z @ z.T - 0.5 * z_sq_norm.unsqueeze(0)  # [B, B]; entry [i,j] = z_i . z_j - 0.5||z_j||^2
+
         with torch.no_grad():
             log_W = torch.log(torch.clamp(W.detach(), min=eps))
             log_priors = torch.log(torch.clamp(self.class_priors, min=eps))
 
-            # positive selection: best prototype within the target class, from P
+            # positive selection: best prototype within the target class, from P (unchanged)
             pos_score = pos_logits_full.detach()[rows, targets, :] + log_W[targets]  # [B, K]
             best_pos_proto_idx = pos_score.argmax(dim=1)  # [B]
 
-            # negative selection: best (class, prototype) among all other
-            # classes, from Q
-            neg_score = (
-                neg_logits_full.detach()
-                + log_W.unsqueeze(0)
-                + log_priors.view(1, C, 1)
-            )  # [B, C, K]
-            neg_score[rows, targets, :] = -torch.inf
+            # negative selection: hardest other-class data point in the batch.
+            # score[i, j] uses sample j's own class prior; no weight term.
+            neg_score = data_logits.detach() + log_priors[targets].unsqueeze(0)  # [B, B]
+            same_class_mask = targets.unsqueeze(1) == targets.unsqueeze(0)  # [B, B], True incl. diagonal
+            neg_score = neg_score.masked_fill(same_class_mask, float('-inf'))
 
-            flat_neg_idx = neg_score.view(B, C * K).argmax(dim=1)  # [B]
-            best_neg_class_idx = flat_neg_idx // K
-            best_neg_proto_idx = flat_neg_idx % K
+            best_neg_idx = neg_score.argmax(dim=1)  # [B], index into the batch
+            # Rows with no valid negative candidate at all (every sample in
+            # the batch shares this row's class -- shouldn't happen with a
+            # multi-identity batch sampler, but guarded rather than assumed).
+            valid_neg = (~same_class_mask).any(dim=1)  # [B]
 
-            # Accumulate selection counts. Must use accumulate=True: plain
-            # fancy-index += silently drops duplicate (class, k) hits when
-            # two samples in the same batch pick the same slot.
-            # Note: neg_proto_counts now indexes into Q (neg_prototypes),
-            # not P -- same buffer, new meaning.
             self.pos_proto_counts.index_put_(
                 (targets, best_pos_proto_idx),
                 torch.ones_like(targets, dtype=self.pos_proto_counts.dtype),
                 accumulate=True,
             )
-            self.neg_proto_counts.index_put_(
-                (best_neg_class_idx, best_neg_proto_idx),
-                torch.ones_like(best_neg_class_idx, dtype=self.neg_proto_counts.dtype),
-                accumulate=True,
-            )
+            # neg_proto_counts is not updated here: negatives are now
+            # individual data points, not (class, k) prototype slots.
 
         # --------------------------------------------------------------
-        # Gather selected components. Both sides now stay attached to the
-        # live graph with no detaching required: P and Q are separate
-        # parameters, so a class's positive prototype is structurally
-        # protected from its role as someone else's negative anchor --
-        # that role now belongs entirely to Q. Weights (W) are still
-        # shared between the two roles (see class-level note above);
-        # everything else is unchanged.
+        # Gather selected components. Positive prototype: grad -> P only,
+        # as always. Negative: grad -> z itself (i.e. back into the
+        # network), via whichever batch index was selected -- not detached,
+        # since the whole point of this design is that the negative side
+        # is a real, differentiable data point.
         # --------------------------------------------------------------
         best_pos_proto = P[targets, best_pos_proto_idx]      # [B, D], grad -> P only
         best_pos_weight = W[targets, best_pos_proto_idx]     # [B],    grad -> W
         pos_priors = self.class_priors[targets]              # [B]
 
-        best_neg_proto = Q[best_neg_class_idx, best_neg_proto_idx]   # [B, D], grad -> Q only
-        best_neg_weight = W[best_neg_class_idx, best_neg_proto_idx]  # [B],    grad -> W
-        best_neg_class_prior = self.class_priors[best_neg_class_idx] # [B]
+        best_neg_embed = z[best_neg_idx]                     # [B, D], grad -> z (network) only
+        best_neg_class = targets[best_neg_idx]                # [B]
+        best_neg_class_prior = self.class_priors[best_neg_class]  # [B]
 
         current_loss = F.softplus(
             (torch.log(best_neg_class_prior) - torch.log(pos_priors)) +
-            (torch.log(best_neg_weight) - torch.log(best_pos_weight)) +
+            (-torch.log(best_pos_weight)) +  # negative side has no mixture weight (log(1) = 0)
             beta * (
-                (embeddings * best_neg_proto).sum(dim=1)
-                - 0.5 * (best_neg_proto * best_neg_proto).sum(dim=1)
+                (embeddings * best_neg_embed).sum(dim=1)
+                - 0.5 * (best_neg_embed * best_neg_embed).sum(dim=1)
                 - (embeddings * best_pos_proto).sum(dim=1)
                 + 0.5 * (best_pos_proto * best_pos_proto).sum(dim=1)
             )
         )
+
+        current_loss = current_loss[valid_neg]
 
         if current_loss.numel() == 0:
             return torch.zeros(1, requires_grad=True, device=self.device)
