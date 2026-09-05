@@ -81,23 +81,18 @@ def train(cfg):
     if cfg.LOSSES.NAME_AUX in ['softtriple_loss', 'proxynca_loss', 'center_loss', 'adv_loss']:
         loss_param = criterion_aux
 
+    optimizer_main, optimizer_loss = build_optimizer(
+        cfg,
+        model,
+        criterion=criterion,
+        loss_param=loss_param,
+    )
 
-    if cfg.LOSSES.NAME == 'mpcbml_loss':
-        optimizer_main, optimizer_loss = build_optimizer(
-            cfg,
-            model,
-            criterion=criterion,
-            loss_param=loss_param,
-        )
-
-        scheduler_main, scheduler_loss = build_lr_scheduler(
-            cfg,
-            optimizer_main,
-            optimizer_loss,
-        )
-    else:
-        optimizer = build_optimizer(cfg, model,loss_param=loss_param)
-        scheduler = build_lr_scheduler(cfg, optimizer)
+    scheduler_main, scheduler_loss = build_lr_scheduler(
+        cfg,
+        optimizer_main,
+        optimizer_loss,
+    )
 
     train_loader = build_data(cfg, is_train=True)
     val_loader = build_data(cfg, is_train=False)
@@ -110,11 +105,7 @@ def train(cfg):
     arguments["iteration"] = 0
 
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD
-
-    if cfg.LOSSES.NAME == 'mpcbml_loss':
-        checkpointer = Checkpointer(model, optimizer_main, scheduler_main, cfg.SAVE_DIR)
-    else:
-        checkpointer = Checkpointer(model, optimizer, scheduler, cfg.SAVE_DIR)
+    checkpointer = Checkpointer(model, optimizer_main, scheduler_main, cfg.SAVE_DIR)
 
     # Change this and optimizer files (in solver folder) + trainer arguments
     do_train(

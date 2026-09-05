@@ -88,11 +88,14 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
         print(
             f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
         )
-    
-    for i, g in enumerate(optimizer_loss.param_groups):
-        print(
-            f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
-        )
+
+    if optimizer_loss is not None:
+        for i, g in enumerate(optimizer_loss.param_groups):
+            print(
+                f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
+            )
+    else:
+        print("optimizer_loss: None (criterion has no learnable parameters)")
 
     return optimizer_main, optimizer_loss
 
