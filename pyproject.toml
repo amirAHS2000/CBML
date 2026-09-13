@@ -1,0 +1,25 @@
+[build-system]
+requires = [
+    "setuptools>=64",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cbml_benchmark"
+version = "0.1"
+description = "CBML"
+requires-python = ">=3.9"
+authors = [
+    { name = "Anonymous" },
+]
+dependencies = [
+    "torch",
+    "torchvision",
+]
+
+[project.urls]
+Homepage = "https://github.com/Anonymous"
+
+[tool.setuptools.packages.find]
+exclude = ["configs*", "tests*"]
