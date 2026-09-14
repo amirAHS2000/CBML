@@ -1,9 +1,9 @@
 MODEL:
   BACKBONE:
-    NAME: resnet18
+    NAME: resnet50
   PRETRAIN: imagenet
 
-SAVE_DIR: output-resnet50-cub-cbml
+SAVE_DIR: output-resnet50-cub
 
 INPUT:
    MODE: 'RGB'
