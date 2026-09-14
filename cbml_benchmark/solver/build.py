@@ -10,28 +10,18 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
 
     # ---------- ADAM for model ----------
     model_params = []
+    lr_mul = 1.0
     for key, value in model.named_parameters():
         if not value.requires_grad:
             continue
-        if key.startswith('backbone.'):
-            lr_mul = backbone_lr_mult
-            weight_decay = cfg.SOLVER.WEIGHT_DECAY
-        elif key.startswith('headembedding.'):
-            lr_mul = head_lr_mult
-            weight_decay = cfg.SOLVER.WEIGHT_DECAY
-        else:
-            lr_mul = 1.0
-            weight_decay = 0.0
+        if "backbone" in key:
+            lr_mul = 0.1
+        model_params += [{"params": [value], "lr_mul": lr_mul}]
 
-        model_params.append({
-            'params': [value],
-            'lr': base_lr * lr_mul,
-            'weight_decay': weight_decay
-        })
-
-    # Main optimizer (Adam) only for model
     optimizer_main = getattr(torch.optim, cfg.SOLVER.OPTIMIZER_NAME)(
-        model_params
+        model_params,
+        lr=base_lr,
+        weight_decay=cfg.SOLVER.WEIGHT_DECAY
     )
 
     # ---------- SGD for loss parameters ----------

@@ -87,12 +87,14 @@ def train(cfg):
         criterion=criterion,
         loss_param=loss_param,
     )
+    optimizer_loss = None
 
     scheduler_main, scheduler_loss = build_lr_scheduler(
         cfg,
         optimizer_main,
         optimizer_loss,
     )
+    scheduler_loss = None
 
     train_loader = build_data(cfg, is_train=True)
     val_loader = build_data(cfg, is_train=False)
