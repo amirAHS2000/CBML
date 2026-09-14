@@ -1,124 +1,31 @@
 import torch
+
 from .lr_scheduler import WarmupMultiStepLR
 
 
-def build_optimizer(cfg, model, criterion=None, loss_param=None):
-    base_lr = getattr(cfg.SOLVER, 'BASE_LR', 0.0001)
-    backbone_lr_mult = getattr(cfg.SOLVER, 'BACKBONE_LR_MULT', 0.2)
-    head_lr_mult = getattr(cfg.SOLVER, 'HEAD_LR_MULT', 1.0)
-
-
-    # ---------- ADAM for model ----------
-    model_params = []
+def build_optimizer(cfg, model, loss_param=None):
+    params = []
+    lr_mul = 1.0
     for key, value in model.named_parameters():
         if not value.requires_grad:
             continue
-        if key.startswith('backbone.'):
-            lr_mul = backbone_lr_mult
-            weight_decay = cfg.SOLVER.WEIGHT_DECAY
-        elif key.startswith('headembedding.'):
-            lr_mul = head_lr_mult
-            weight_decay = cfg.SOLVER.WEIGHT_DECAY
-        else:
-            lr_mul = 1.0
-            weight_decay = 0.0
+        if "backbone" in key:
+            lr_mul = 0.1
+        params += [{"params": [value], "lr_mul": lr_mul}]
+    if loss_param is not None: # for soft triplet loss
+        params += [{"params": loss_param.parameters(), "lr_mul": lr_mul}]
+    optimizer = getattr(torch.optim, cfg.SOLVER.OPTIMIZER_NAME)(params,
+                                                                lr=cfg.SOLVER.BASE_LR,
+                                                                weight_decay=cfg.SOLVER.WEIGHT_DECAY)
+    return optimizer
 
-        model_params.append({
-            'params': [value],
-            'lr': base_lr * lr_mul,
-            'weight_decay': weight_decay
-        })
 
-    # Main optimizer (Adam) only for model
-    optimizer_main = getattr(torch.optim, cfg.SOLVER.OPTIMIZER_NAME)(
-        model_params
-    )
-
-    # ---------- SGD for loss parameters ----------
-    loss_params = []
-    is_mpcbml = (cfg.LOSSES.NAME == 'mpcbml_loss')
-   
-    if is_mpcbml and criterion is not None:
-        # Prototypes
-        if hasattr(criterion, 'prototypes') and criterion.prototypes.requires_grad:
-            loss_params.append({
-                'params': [criterion.prototypes],
-                'lr': base_lr * 1000.0,         # as before, high LR
-                'momentum': 0.9,              # pure SGD, no momentum
-                'weight_decay': 0.0
-            })
-        # Negative prototypes (dedicated, decoupled from Prototypes above --
-        # see mpcbml_loss.py). Defaults to the same LR/momentum as
-        # Prototypes since they're the same kind of object; override with
-        # cfg.SOLVER.NEG_PROTOTYPE_LR if they need independent tuning.
-        if hasattr(criterion, 'neg_prototypes') and criterion.neg_prototypes.requires_grad:
-            neg_proto_lr = getattr(cfg.SOLVER, 'NEG_PROTOTYPE_LR', base_lr * 1000.0)
-            loss_params.append({
-                'params': [criterion.neg_prototypes],
-                'lr': neg_proto_lr,
-                'momentum': 0.9,
-                'weight_decay': 0.0
-            })
-        # Theta
-        if hasattr(criterion, 'theta') and criterion.theta.requires_grad:
-            loss_params.append({
-                'params': [criterion.theta],
-                'lr': base_lr * 3.0,
-                'momentum': 0.0,
-                'weight_decay': 0.0
-            })
-        # Weights (keep separate LR and momentum as per config)
-        if hasattr(criterion, 'weights') and criterion.weights.requires_grad:
-            weight_lr = getattr(cfg.SOLVER, 'WEIGHT_LR', 0.00003)
-            weight_momentum = getattr(cfg.SOLVER, 'WEIGHT_MOMENTUM', 0.0)
-            loss_params.append({
-                'params': [criterion.weights],
-                'lr': weight_lr,
-                'momentum': weight_momentum,
-                'weight_decay': 0.0
-            })
-    
-    # Create a single SGD optimizer for all loss parameters
-    if loss_params:
-        optimizer_loss = torch.optim.SGD(loss_params)
-    else:
-        optimizer_loss = None
-
-    for i, g in enumerate(optimizer_main.param_groups):
-        print(
-            f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
-        )
-
-    if optimizer_loss is not None:
-        for i, g in enumerate(optimizer_loss.param_groups):
-            print(
-                f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
-            )
-    else:
-        print("optimizer_loss: None (criterion has no learnable parameters)")
-
-    return optimizer_main, optimizer_loss
-
-def build_lr_scheduler(cfg, optimizer_main, optimizer_loss=None):
-    scheduler_main = WarmupMultiStepLR(
-        optimizer_main,
+def build_lr_scheduler(cfg, optimizer):
+    return WarmupMultiStepLR(
+        optimizer,
         cfg.SOLVER.STEPS,
         cfg.SOLVER.GAMMA,
         warmup_factor=cfg.SOLVER.WARMUP_FACTOR,
         warmup_iters=cfg.SOLVER.WARMUP_ITERS,
         warmup_method=cfg.SOLVER.WARMUP_METHOD,
     )
-    
-    scheduler_loss = None
-    if optimizer_loss is not None:
-        scheduler_loss = WarmupMultiStepLR(
-            optimizer_loss,
-            cfg.SOLVER.STEPS,
-            cfg.SOLVER.GAMMA,
-            warmup_factor=cfg.SOLVER.WARMUP_FACTOR,
-            warmup_iters=cfg.SOLVER.WARMUP_ITERS,
-            warmup_method=cfg.SOLVER.WARMUP_METHOD,
-        )
-    
-    return scheduler_main, scheduler_loss
-
