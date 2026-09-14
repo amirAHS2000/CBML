@@ -19,6 +19,7 @@ SOLVER:
   WEIGHT_DECAY: 0.0005
 
 LOSSES:
+  NAME: 'cbml_loss'
   CBML_LOSS:
     # Converted from the original similarity-space values (POS_A=0.5,
     # POS_B=0.5, NEG_A=1.0, NEG_B=0.01, MARGIN=0.1) via dist = 2 - 2*sim,
