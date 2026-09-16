@@ -7,42 +7,34 @@ from cbml_benchmark.losses.registry import LOSS
 @LOSS.register('cbml_loss')
 class CBMLLoss(nn.Module):
     """
-    Step 1 of the ablation ladder: identical to the original CBMLLoss, except
-    the pairwise inner-product similarity matrix is replaced by a pairwise
-    SQUARED EUCLIDEAN DISTANCE matrix.
+    Step 2 of the ablation ladder, built on top of step 1
+    (CBMLLossStep1Euclidean).
 
-    IMPORTANT: this is not a pure drop-in numerical equivalent of the
-    original. For unit-normalized embeddings, similarity and squared
-    distance are related by dist = 2 - 2*sim, which is a monotonic
-    (order-preserving) transform -- but the loss below does NOT just
-    substitute that formula into the old code unchanged, because every
-    "high = good" comparison in similarity space becomes a "low = good"
-    comparison in distance space. Concretely, three things flip:
+    SINGLE VARIABLE CHANGED FROM STEP 1: aggregation over mined pairs.
 
-      1. Hard-positive-mining condition:
-         original: pos_pair - margin < max(neg_pair)   (similarity)
-         here:     pos_pair + margin > min(neg_pair)   (distance)
+    Step 1 mines a set of "hard" positive and negative pairs (via the same
+    margin-based filtering as the original CBML), then aggregates ALL of
+    them softly via a LogSumExp-style sum inside pos_loss/neg_loss.
 
-      2. Hard-negative selection when NOT adaptive:
-         original: take the 100 LARGEST similarities
-         here:     take the 100 SMALLEST distances
+    This step keeps the mining step IDENTICAL to step 1 -- same pp/np_
+    filtering conditions, same margin -- but instead of summing over every
+    mined pair, it picks only the single hardest one from each mined set:
 
-      3. Loss exponent signs (pos_a/neg_a act as distance thresholds now,
-         not similarity thresholds):
-         original pos: exp(-1/pos_b * (pos_pair - pos_a))
-         here     pos: exp(+1/pos_b * (pos_pair - pos_a))
-         original neg: exp(+1/neg_b * (neg_pair - neg_a))
-         here     neg: exp(-1/neg_b * (neg_pair - neg_a))
+      - hardest positive = the mined positive with the LARGEST distance
+        (farthest same-class sample -- hardest to pull together)
+      - hardest negative = the mined negative with the SMALLEST distance
+        (closest different-class sample -- hardest to push apart)
 
-    Everything else (the adaptive-negative branch, the sigma_ regularizer,
-    the log/sqrt/plain loss-type branching, the overall control flow) is
-    kept structurally identical to the original so this is a clean
-    single-variable change for the ablation.
+    and plugs only that single scalar into the exp/log formula, instead of
+    a sum over the whole mined set. This isolates "soft aggregation over
+    many hard pairs" vs. "hard selection of one pair" as its own variable,
+    separate from the later step of switching from instances to prototypes.
 
-    NOTE ON HYPERPARAMETERS: pos_a, neg_a, margin, pos_b, neg_b were tuned
-    for a similarity range of [-1, 1]. Squared Euclidean distance for
-    unit-normalized vectors ranges over [0, 4], so these will very likely
-    need retuning here rather than reused verbatim from the original config.
+    The sigma_ regularizer is left untouched (still computed over the full,
+    unmined neg_pair_ set) since it's orthogonal to this change.
+
+    Everything else (adaptive-negative mining, TYPE branching, sigma_
+    regularizer, overall control flow) is unchanged from step 1.
     """
 
     def __init__(self, cfg):
@@ -64,10 +56,6 @@ class CBMLLoss(nn.Module):
             f"feats.size(0): {feats.size(0)} is not equal to labels.size(0): {labels.size(0)}"
         batch_size = feats.size(0)
 
-        # --- CHANGE FROM ORIGINAL: squared Euclidean distance instead of
-        # inner-product similarity. torch.cdist gives (unsquared) Euclidean
-        # distance directly, so we square it; this works regardless of
-        # whether feats are exactly unit-normalized.
         dist_mat = torch.cdist(feats, feats, p=2) ** 2
 
         epsilon = 1e-5
@@ -76,39 +64,38 @@ class CBMLLoss(nn.Module):
         for i in range(batch_size):
 
             pos_pair_ = dist_mat[i][labels == labels[i]]
-            # CHANGED: self-distance is ~0, not ~1, so exclude near-zero
-            # distances instead of near-1 similarities.
             pos_pair_ = pos_pair_[pos_pair_ > epsilon]
             neg_pair_ = dist_mat[i][labels != labels[i]]
 
             if len(neg_pair_) < 1 or len(pos_pair_) < 1:
                 continue
 
+            # sigma_ regularizer: unchanged, computed over the full,
+            # unmined neg_pair_ set exactly as in step 1.
             mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
             sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
 
-            # --- CHANGE FROM ORIGINAL: hard-mining conditions flipped for
-            # distance space (see class docstring, point 1).
+            # Mining: identical to step 1.
             pp = pos_pair_ + self.margin > torch.min(neg_pair_)
             pos_pair = pos_pair_[pp]
             if self.adaptive_neg:
                 np_ = neg_pair_ - self.margin < torch.max(pos_pair_)
                 neg_pair = neg_pair_[np_]
             else:
-                # CHANGED: hardest negatives are now the SMALLEST distances,
-                # so sort ascending and take the first 100, not the last 100.
                 np_ = torch.argsort(neg_pair_)
                 neg_pair = neg_pair_[np_[:100]]
 
             if len(neg_pair) < 1 or len(pos_pair) < 1:
                 continue
 
-            # --- CHANGE FROM ORIGINAL: exponent signs flipped for distance
-            # space (see class docstring, point 3). pos_a/neg_a now act as
-            # distance thresholds, pos_b/neg_b as distance-scale factors.
+            # --- CHANGE FROM STEP 1: instead of summing over the whole
+            # mined set, keep only the single hardest pair from each side.
+            hardest_pos = torch.max(pos_pair)   # farthest same-class sample
+            hardest_neg = torch.min(neg_pair)   # closest different-class sample
+
             if self.type == 'log' or self.type == 'sqrt':
-                fp = 1. + torch.sum(torch.exp(1. / self.pos_b * (pos_pair - self.pos_a)))
-                fn = 1. + torch.sum(torch.exp(-1. / self.neg_b * (neg_pair - self.neg_a)))
+                fp = 1. + torch.exp(1. / self.pos_b * (hardest_pos - self.pos_a))
+                fn = 1. + torch.exp(-1. / self.neg_b * (hardest_neg - self.neg_a))
                 if self.type == 'log':
                     pos_loss = torch.log(fp)
                     neg_loss = torch.log(fn)
@@ -116,8 +103,8 @@ class CBMLLoss(nn.Module):
                     pos_loss = torch.sqrt(fp)
                     neg_loss = torch.sqrt(fn)
             else:
-                pos_loss = 1. + self.loss_weight_p * torch.sum(torch.exp(1. / self.pos_b * (pos_pair - self.pos_a)))
-                neg_loss = 1. + self.loss_weight_n * torch.sum(torch.exp(-1. / self.neg_b * (neg_pair - self.neg_a)))
+                pos_loss = 1. + self.loss_weight_p * torch.exp(1. / self.pos_b * (hardest_pos - self.pos_a))
+                neg_loss = 1. + self.loss_weight_n * torch.exp(-1. / self.neg_b * (hardest_neg - self.neg_a))
 
             pos_neg_loss = sigma_
             loss.append((pos_loss + neg_loss + self.weight * pos_neg_loss))
