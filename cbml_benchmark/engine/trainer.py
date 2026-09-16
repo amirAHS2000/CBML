@@ -10,24 +10,12 @@ from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
 
 
-def update_ema_variables(model, ema_model):
-    """
-    Update the Exponential Moving Average (EMA) model parameters.
-    Args:
-    - model: The main model being trained.
-    - ema_model: The model used to store EMA of the parameters.
-    """
-    alpha = 0.999  # EMA smoothing coefficient.
-    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
-        # Update EMA parameters: new_ema = alpha * old_ema + (1 - alpha) * current_param
-        ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
-
-
 def do_train(
         cfg,               # Configuration object with training settings.
         model,             # Neural network model to train.
         train_loader,      # DataLoader for training data.
         val_loader,        # DataLoader for validation data.
+        eval_train_loader,
         optimizer,         # Optimizer for updating model parameters.
         scheduler,         # Learning rate scheduler.
         criterion,         # Primary loss function.
@@ -50,11 +38,19 @@ def do_train(
     best_iteration = -1
     best_recall = 0
 
+    # Store recalls for plotting
+    train_recalls_over_iters = []
+    val_recalls_over_iters = []
+    iters = []
+
     # Start timers for training.
     start_training_time = time.time()
     end = time.time()
 
     for iteration, (images, targets) in enumerate(train_loader, start_iter):
+        # ====================================================================
+        # VALIDATION
+        # ====================================================================
         # Perform validation periodically or at the end of training.
         if iteration % cfg.VALIDATION.VERBOSE == 0 or iteration == max_iter:
             model.eval()  # Set model to evaluation mode.
@@ -74,16 +70,35 @@ def do_train(
             recall_curr.append(ret_metric.recall_k(8))
 
             # Log current recall metrics.
-            print(recall_curr)
+            logger.info(f'Val Recalls: {recall_curr}')
 
             # Update best model if recall@1 improves.
             if recall_curr[0] > best_recall:
                 best_recall = recall_curr[0]
                 best_iteration = iteration
                 logger.info(f'Best iteration {iteration}: recall@1: {recall_curr[0]:.3f}')
-                checkpointer.save(f"best_model")
+                # checkpointer.save(f"best_model")
             else:
                 logger.info(f'Recall@1 at iteration {iteration:06d}: recall@1: {recall_curr[0]:.3f}')
+
+            # Compute recalls on training set
+            train_eval_labels = eval_train_loader.dataset.label_list
+            train_eval_labels = np.array([int(k) for k in train_eval_labels])
+            train_eval_feats = feat_extractor(model, eval_train_loader, logger=logger)
+
+            ret_metric_train_eval = RetMetric(feats=train_eval_feats, labels=train_eval_labels)
+            recall_curr_train_eval = []
+            recall_curr_train_eval.append(ret_metric_train_eval.recall_k(1))
+            recall_curr_train_eval.append(ret_metric_train_eval.recall_k(2))
+            recall_curr_train_eval.append(ret_metric_train_eval.recall_k(4))
+            recall_curr_train_eval.append(ret_metric_train_eval.recall_k(8))
+            
+            logger.info(f'Train Recalls: {recall_curr_train_eval}')
+
+            # store for plotting
+            iters.append(iteration)
+            train_recalls_over_iters.append(recall_curr_train_eval)
+            val_recalls_over_iters.append(recall_curr)
 
         # Switch back to training mode.
         model.train()
@@ -155,8 +170,22 @@ def do_train(
             )
 
         # Save model checkpoint periodically.
-        if iteration % checkpoint_period == 0:
-            checkpointer.save("model_{:06d}".format(iteration))
+        # if iteration % checkpoint_period == 0:
+        #     checkpointer.save("model_{:06d}".format(iteration))
+
+    # ====================================================================
+    # POST-TRAINING: PLOTTING
+    # ====================================================================
+    for i, k in enumerate([1, 2, 4, 8]):
+        plt.figure()
+        plt.plot(iters, [r[i] for r in train_recalls_over_iters], label=f'Train R@{k}')
+        plt.plot(iters, [r[i] for r in val_recalls_over_iters], label=f'Val R@{k}')
+        plt.xlabel('Iteration')
+        plt.ylabel(f'Recall@{k}')
+        plt.legend()
+        plt.title(f'Recall@K over Iterations (k={k})')
+        plt.savefig(os.path.join(cfg.SAVE_DIR, f'recall_at_{k}_iter_{iteration}.png'))
+        plt.close()  # Close to free memory
 
     # Log total training time.
     total_training_time = time.time() - start_training_time

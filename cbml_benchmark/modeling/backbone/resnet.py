@@ -34,7 +34,7 @@ class ResNet50(nn.Module):
         return x
 
     def load_param(self, model_path):
-        param_dict = torch.load(model_path)
+        param_dict = torch.load(model_path, weights_only=False)
         for i in param_dict:
             if 'last_linear' in i:
                 continue
@@ -68,7 +68,7 @@ class ResNet18(nn.Module):
         return x
 
     def load_param(self, model_path):
-        param_dict = torch.load(model_path)
+        param_dict = torch.load(model_path, weights_only=False)
         for i in param_dict:
             if 'last_linear' in i:
                 continue
@@ -102,7 +102,7 @@ class ResNet34(nn.Module):
         return x
 
     def load_param(self, model_path):
-        param_dict = torch.load(model_path)
+        param_dict = torch.load(model_path, weights_only=False)
         for i in param_dict:
             if 'last_linear' in i:
                 continue
@@ -136,7 +136,7 @@ class ResNet101(nn.Module):
         return x
 
     def load_param(self, model_path):
-        param_dict = torch.load(model_path)
+        param_dict = torch.load(model_path, weights_only=False)
         for i in param_dict:
             if 'last_linear' in i:
                 continue
@@ -170,7 +170,7 @@ class ResNet152(nn.Module):
         return x
 
     def load_param(self, model_path):
-        param_dict = torch.load(model_path)
+        param_dict = torch.load(model_path, weights_only=False)
         for i in param_dict:
             if 'last_linear' in i:
                 continue
