@@ -51,6 +51,8 @@ LOSSES:
     INIT_METHOD: 'kmeans'
     N_CLASSES: 100
     PROTOTYPE_PER_CLASS: 3
+    THETA_IS_LEARNABLE: True
+    INIT_THETA: 0.7
 
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt
