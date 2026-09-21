@@ -41,7 +41,7 @@ LOSSES:
     # similarities, so the squared term scales by 2^2 = 4x. WEIGHT is
     # rescaled by 1/4 to preserve the original relative contribution of
     # this regularizer to the total loss.
-    WEIGHT: 0.25    # was 1.0 (similarity) -- rescaled by 1/4, see note above
+    WEIGHT: 0.0    # was 1.0 (similarity) -- rescaled by 1/4, see note above
 
     # Unused under TYPE='log' (only read in the TYPE='constant' branch),
     # carried over unchanged from the original config for completeness.
@@ -53,7 +53,7 @@ LOSSES:
     INIT_METHOD: 'kmeans'
     N_CLASSES: 100
     PROTOTYPE_PER_CLASS: 3
-    THETA_IS_LEARNABLE: True
+    THETA_IS_LEARNABLE: False
     INIT_THETA: 0.7
 
 DATA:
