@@ -2,6 +2,8 @@ MODEL:
   BACKBONE:
     NAME: resnet50
   PRETRAIN: imagenet
+  HEAD:
+    DIM: 64
 
 SAVE_DIR: output-resnet50-cub
 
@@ -20,40 +22,13 @@ SOLVER:
 
 LOSSES:
   CBML_LOSS:
-    # Converted from the original similarity-space values (POS_A=0.5,
-    # POS_B=0.5, NEG_A=1.0, NEG_B=0.01, MARGIN=0.1) via dist = 2 - 2*sim,
-    # under the assumption that embeddings are unit-normalized.
-    # These are a starting point for the step-1 Euclidean-distance ablation,
-    # not independently re-tuned -- treat as the "closest equivalent"
-    # to the original CBML authors' setting, then tune from here if needed.
-    POS_A: 1.0    # was 0.5 (similarity)
-    POS_B: 1.0    # was 0.5 (similarity)
-    NEG_A: 0.0    # was 1.0 (similarity)
-    NEG_B: 0.02   # was 0.01 (similarity)
-    MARGIN: 0.2   # was 0.1 (similarity)
-    HYPER_WEIGHT: 0.2   # unchanged -- dimensionless blend coefficient
-
-    # sigma_ (the pos_neg_loss regularizer) is built from SQUARED
-    # differences of pairwise values. Since dist = 2 - 2*sim, any
-    # difference-of-distances is 2x the corresponding difference-of-
-    # similarities, so the squared term scales by 2^2 = 4x. WEIGHT is
-    # rescaled by 1/4 to preserve the original relative contribution of
-    # this regularizer to the total loss.
-    WEIGHT: 0.25    # was 1.0 (similarity) -- rescaled by 1/4, see note above
-
-    # Unused under TYPE='log' (only read in the TYPE='constant' branch),
-    # carried over unchanged from the original config for completeness.
-    WEIGHT_P: 0.25
-    WEIGHT_N: 0.25
-
-    ADAPTIVE_NEG: True   # unchanged -- selects the adaptive-negative mining branch
-    TYPE: 'log'          # unchanged -- log/sqrt/constant loss-form switch
-    INIT_METHOD: 'kmeans'
-    N_CLASSES: 100
-    PROTOTYPE_PER_CLASS: 3
-    THETA_IS_LEARNABLE: True
-    INIT_THETA: 0.7
-
+    POS_A: 0.5
+    POS_B: 0.5
+    NEG_A: 1.0
+    NEG_B: 0.01
+    MARGIN: 0.1
+    HYPER_WEIGHT: 0.2
+  
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt
   TEST_IMG_SOURCE: resource/datasets/CUB_200_2011/test.txt
