@@ -43,6 +43,13 @@ class CBMLLoss(nn.Module):
     boolean masks instead of per-row masking inside a loop, using the exact
     same sigma_ formula (sum, not mean, over negatives -- matching the
     original cbml.py precisely) as every other file in this series.
+
+    MVC METRIC: uses cosine SIMILARITY (feats @ feats.T), matching the
+    original CBML paper's m(x_i,x_j), not squared Euclidean distance -- the
+    only change from the previous version of this file. As in the original
+    cbml.py, embeddings are assumed already unit-normalized upstream (no
+    explicit normalization is applied here). The main KDE loss above is
+    UNCHANGED and still operates on squared Euclidean distance.
     """
 
     def __init__(self, cfg):
@@ -70,7 +77,8 @@ class CBMLLoss(nn.Module):
         labels = labels.to(self.device)
         beta = torch.exp(self.theta)
 
-        dist_mat = torch.cdist(feats, feats, p=2) ** 2  # [B, B]
+        dist_mat = torch.cdist(feats, feats, p=2) ** 2  # [B, B] -- main loss only
+        sim_mat = feats @ feats.t()                     # [B, B] -- MVC only
 
         unique_classes = torch.unique(labels)
         U = unique_classes.numel()
@@ -105,11 +113,11 @@ class CBMLLoss(nn.Module):
 
         pos_count = pos_mask.sum(dim=1).clamp(min=1)
         neg_count = neg_mask.sum(dim=1).clamp(min=1)
-        pos_mean = (dist_mat * pos_mask).sum(dim=1) / pos_count
-        neg_mean = (dist_mat * neg_mask).sum(dim=1) / neg_count
+        pos_mean = (sim_mat * pos_mask).sum(dim=1) / pos_count
+        neg_mean = (sim_mat * neg_mask).sum(dim=1) / neg_count
         mean_ = self.hyper_weight * pos_mean + (1 - self.hyper_weight) * neg_mean  # [B]
 
-        diff_sq = (dist_mat - mean_.unsqueeze(1)) ** 2
+        diff_sq = (sim_mat - mean_.unsqueeze(1)) ** 2
         sigma_ = (diff_sq * neg_mask).sum(dim=1)  # [B], SUM not mean, matching cbml.py exactly
 
         mvc_valid = (pos_mask.sum(dim=1) > 0) & (neg_mask.sum(dim=1) > 0)
