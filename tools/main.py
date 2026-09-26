@@ -34,41 +34,41 @@ def train(cfg):
         criterion_aux = build_aux_loss(cfg)
 
     # initializing prototypes if using mpcbml loss
-    # if cfg.LOSSES.NAME == 'cbml_loss':
-    #     cached_prototypes, cached_cluster_sizes, cache_path = load_cached_prototypes(cfg)
+    if cfg.LOSSES.NAME == 'cbml_loss':
+        cached_prototypes, cached_cluster_sizes, cache_path = load_cached_prototypes(cfg)
 
-    #     if cached_prototypes is not None:
-    #         logger.info(f"Loaded cached prototypes from {cache_path}, skipping recomputation.")
-    #         prototypes = cached_prototypes
-    #         cluster_sizes = cached_cluster_sizes
-    #     else:
-    #         logger.info(f"No cache found. Initializing prototypes using {cfg.LOSSES.CBML_LOSS.INIT_METHOD}...")
+        if cached_prototypes is not None:
+            logger.info(f"Loaded cached prototypes from {cache_path}, skipping recomputation.")
+            prototypes = cached_prototypes
+            cluster_sizes = cached_cluster_sizes
+        else:
+            logger.info(f"No cache found. Initializing prototypes using {cfg.LOSSES.CBML_LOSS.INIT_METHOD}...")
 
-    #         if cfg.LOSSES.CBML_LOSS.INIT_METHOD == 'kmeans':
-    #             prototypes, cluster_sizes = initialize_prototypes_kmeans(model=model, cfg=cfg)
-    #         elif cfg.LOSSES.CBML_LOSS.INIT_METHOD == 'mean':
-    #             prototypes = initialize_prototypes_mean(model=model, cfg=cfg)
-    #             cluster_sizes = None
-    #         elif cfg.LOSSES.CBML_LOSS.INIT_METHOD == 'random':
-    #             prototypes = initialize_prototypes_random(
-    #                 num_classes=cfg.LOSSES.CBML_LOSS.N_CLASSES,
-    #                 prototype_per_class=cfg.LOSSES.CBML_LOSS.PROTOTYPE_PER_CLASS,
-    #                 embed_dim=cfg.MODEL.HEAD.DIM,
-    #                 device=device
-    #             )
-    #             cluster_sizes = None
-    #         else:
-    #             raise ValueError(f"Unknown initializing method: {cfg.LOSSES.CBML_LOSS.INIT_METHOD}")
+            if cfg.LOSSES.CBML_LOSS.INIT_METHOD == 'kmeans':
+                prototypes, cluster_sizes = initialize_prototypes_kmeans(model=model, cfg=cfg)
+            elif cfg.LOSSES.CBML_LOSS.INIT_METHOD == 'mean':
+                prototypes = initialize_prototypes_mean(model=model, cfg=cfg)
+                cluster_sizes = None
+            elif cfg.LOSSES.CBML_LOSS.INIT_METHOD == 'random':
+                prototypes = initialize_prototypes_random(
+                    num_classes=cfg.LOSSES.CBML_LOSS.N_CLASSES,
+                    prototype_per_class=cfg.LOSSES.CBML_LOSS.PROTOTYPE_PER_CLASS,
+                    embed_dim=cfg.MODEL.HEAD.DIM,
+                    device=device
+                )
+                cluster_sizes = None
+            else:
+                raise ValueError(f"Unknown initializing method: {cfg.LOSSES.CBML_LOSS.INIT_METHOD}")
 
-    #         _, key_dict = _get_prototype_cache_path(cfg)
-    #         save_prototype_cache(cache_path, key_dict, prototypes, cluster_sizes)
-    #         logger.info(f"Saved prototype cache to {cache_path}")
+            _, key_dict = _get_prototype_cache_path(cfg)
+            save_prototype_cache(cache_path, key_dict, prototypes, cluster_sizes)
+            logger.info(f"Saved prototype cache to {cache_path}")
 
-    #     criterion.set_prototypes_and_weights(prototypes, cluster_sizes)
-    #     del prototypes
-    #     torch.cuda.empty_cache()
-    #     gc.collect()
-    #     logger.info("Prototype initialization complete.")
+        criterion.set_prototypes_and_weights(prototypes, cluster_sizes)
+        del prototypes
+        torch.cuda.empty_cache()
+        gc.collect()
+        logger.info("Prototype initialization complete.")
 
     loss_param = None
     if cfg.LOSSES.NAME == 'softtriple_loss' or cfg.LOSSES.NAME == 'proxynca_loss' or cfg.LOSSES.NAME == 'center_loss' or cfg.LOSSES.NAME == 'adv_loss':

@@ -1,129 +1,115 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 from cbml_benchmark.losses.registry import LOSS
 
 
 @LOSS.register('cbml_loss')
 class CBMLLoss(nn.Module):
-    """
-    Vectorized rewrite of CBMLLossKDEDirectEq3. Mathematically identical --
-    verified against the loop-based reference on synthetic data to within
-    floating-point noise (~1e-16) -- but replaces the nested Python loop
-    (batch anchors x classes present, ~B*U iterations) with a handful of
-    matrix operations, which is where essentially all the runtime was going.
-
-    KEY TRICK: a_ij = -(beta/2)*dist(x_i,x_j) <= 0 always, and the diagonal
-    a_ii = 0 exactly (self-distance is always 0). So every row's maximum
-    entry is exactly 0, meaning exp(a) in [0,1] with NO overflow risk --
-    this lets per-class sums be computed as a single matrix multiply against
-    a one-hot class-membership matrix, instead of the usual logsumexp
-    max-subtraction dance done per class per anchor.
-
-    Let H in {0,1}^{B x U} be the one-hot class-membership matrix (H[i,u]=1
-    iff sample i belongs to the u-th class present in the batch). Then:
-        exp_a       = exp(-beta/2 * dist_mat)             [B, B], in (0,1]
-        S_full      = exp_a @ H                           [B, U]  (per-class sums)
-        n_full      = H.sum(0)                            [U]     (per-class counts)
-        S_adj       = S_full - H       (subtract self-term, always exactly 1,
-                                         only from each row's OWN class column)
-        n_adj       = n_full[None,:] - H   (subtract 1 from own-class count only)
-        log_ell     = log(S_adj) - log(n_adj)             [B, U]  (Eq. 44/46 fused)
-        logsumexp_all = logsumexp(log_ell, dim=1)         [B]     (Eq. 45's first term)
-        true_ld     = (log_ell * H).sum(dim=1)            [B]     (Eq. 45's second term,
-                                                                    H picks the one
-                                                                    true-class column)
-        main_loss   = logsumexp_all - true_ld             [B]
-
-    A sample is only invalid (skipped) when it is the SOLE batch member of
-    its own class (n_adj at its own-class column would be 0) -- matches the
-    original loop version's skip condition exactly.
-
-    The MVC regularizer is likewise vectorized via same-class/different-class
-    boolean masks instead of per-row masking inside a loop, using the exact
-    same sigma_ formula (sum, not mean, over negatives -- matching the
-    original cbml.py precisely) as every other file in this series.
-
-    MVC METRIC: uses cosine SIMILARITY (feats @ feats.T), matching the
-    original CBML paper's m(x_i,x_j), not squared Euclidean distance -- the
-    only change from the previous version of this file. As in the original
-    cbml.py, embeddings are assumed already unit-normalized upstream (no
-    explicit normalization is applied here). The main KDE loss above is
-    UNCHANGED and still operates on squared Euclidean distance.
-    """
-
     def __init__(self, cfg):
         super(CBMLLoss, self).__init__()
-        self.hyper_weight = cfg.LOSSES.CBML_LOSS.HYPER_WEIGHT
+        self.pos_a = cfg.LOSSES.CBML_LOSS.POS_A
+        self.pos_b = cfg.LOSSES.CBML_LOSS.POS_B
+        self.neg_a = cfg.LOSSES.CBML_LOSS.NEG_A
+        self.neg_b = cfg.LOSSES.CBML_LOSS.NEG_B
+        self.margin = cfg.LOSSES.CBML_LOSS.MARGIN
         self.weight = cfg.LOSSES.CBML_LOSS.WEIGHT
+        self.hyper_weight = cfg.LOSSES.CBML_LOSS.HYPER_WEIGHT
+        self.adaptive_neg = cfg.LOSSES.CBML_LOSS.ADAPTIVE_NEG
+        self.type = cfg.LOSSES.CBML_LOSS.TYPE
+        self.loss_weight_p = cfg.LOSSES.CBML_LOSS.WEIGHT_P
+        self.loss_weight_n = cfg.LOSSES.CBML_LOSS.WEIGHT_N
 
         self.device_name = getattr(cfg.MODEL, 'DEVICE', 'cuda')
         self.device = torch.device(self.device_name)
+        self.embed_dim = getattr(cfg.MODEL.HEAD, 'DIM', 512)
+        self.num_classes = getattr(cfg.LOSSES.CBML_LOSS, 'N_CLASSES', 100)
 
-        theta_is_learnable = getattr(cfg.LOSSES.CBML_LOSS, 'THETA_IS_LEARNABLE', True)
-        init_theta = getattr(cfg.LOSSES.CBML_LOSS, 'INIT_THETA', 1.0)
-        self.theta = nn.Parameter(
-            torch.tensor(init_theta, device=self.device),
-            requires_grad=theta_is_learnable,
+        # prototypes [C, K, D]
+        # C: number of classes, K: prototypes per class, D: embedding dimension
+        self.prototypes_per_class = getattr(cfg.LOSSES.CBML_LOSS, 'PROTOTYPE_PER_CLASS', 3)
+        self.prototypes = nn.Parameter(
+            torch.zeros(self.num_classes, self.prototypes_per_class, self.embed_dim, device=self.device)
         )
+
+    @torch.no_grad()
+    def set_prototypes(self, prototypes):
+        prototypes = prototypes.to(self.device)
+        self.prototypes.copy_(prototypes)
+        torch.cuda.empty_cache()
 
     def forward(self, feats, labels):
         assert feats.size(0) == labels.size(0), \
             f"feats.size(0): {feats.size(0)} is not equal to labels.size(0): {labels.size(0)}"
+        
+        if feats.device != self.prototypes.device:
+            feats = feats.to(self.device) # [B, D]
+            labels = labels.to(self.device) # [B]
+
         batch_size = feats.size(0)
-        eps = 1e-12
+        P = self.prototypes # [C: number_of_classes, K: prototype_per_class, D: embedding_dimension]
+        P = F.normalize(self.prototypes, p = 2, dim = -1)
+        P = P.view(self.num_classes * self.prototypes_per_class, -1) # [C * K, D]
+        C = self.num_classes
+        K = self.prototypes_per_class
+        
+        sim_mat = torch.matmul(feats, torch.t(feats))
+        feat_proto_sim_mat = torch.matmul(feats, torch.t(P)) # [B, C * K]
+        feat_proto_sim_mat = feat_proto_sim_mat.view(batch_size, C, K) # [B, C, K]
+        epsilon = 1e-5
+        loss = list()
 
-        feats = feats.to(self.device)
-        labels = labels.to(self.device)
-        beta = torch.exp(self.theta)
+        for i in range(batch_size):
 
-        dist_mat = torch.cdist(feats, feats, p=2) ** 2  # [B, B] -- main loss only
-        sim_mat = feats @ feats.t()                     # [B, B] -- MVC only
+            positive_class = labels[i].item()
+            pos_sim = feat_proto_sim_mat[i, positive_class, :]
+            best_pos_proto_idx = torch.argmax(pos_sim).item()
+            best_pos_proto = P[positive_class, best_pos_proto_idx]
 
-        unique_classes = torch.unique(labels)
-        U = unique_classes.numel()
-        if U < 2:
-            return torch.zeros(1, requires_grad=True, device=self.device)
+            # negative selection
+            neg_mask = torch.arange(C, device=self.device) != positive_class
+            neg_class_indices = torch.where(neg_mask)[0] # absolute class indices
+            neg_score = feat_proto_sim_mat[i, neg_mask, :]
 
-        # One-hot class-membership matrix [B, U].
-        H = (labels.unsqueeze(1) == unique_classes.unsqueeze(0)).to(dist_mat.dtype)
+            flat_max_idx = torch.argmax(neg_score)
+            best_neg_class_idx_masked = flat_max_idx // K
+            best_neg_proto_idx = flat_max_idx % K
+            
+            # map back to absolute class index
+            best_neg_class_idx = neg_class_indices[best_neg_class_idx_masked].item()
+            best_neg_proto_idx = best_neg_proto_idx.item()
+            best_neg_proto = P[best_neg_class_idx, best_neg_proto_idx]
+            
+            # ------------------------ MVC term ------------------------------
+            pos_pair_ = sim_mat[i][labels == labels[i]]
+            pos_pair_ = pos_pair_[pos_pair_ < 1 - epsilon]
+            neg_pair_ = sim_mat[i][labels != labels[i]]
 
-        # --- Main loss: vectorized Eq. 44-46 + Eq. 45 ---
-        exp_a = torch.exp(-0.5 * beta * dist_mat)          # [B, B], bounded in (0, 1]
-        S_full = exp_a @ H                                  # [B, U]
-        n_full = H.sum(dim=0)                               # [U]
+            if len(neg_pair_) < 1 or len(pos_pair_) < 1:
+                continue
 
-        S_adj = S_full - H                                  # subtract self-term from own class only
-        n_adj = n_full.unsqueeze(0) - H                     # subtract 1 from own-class count only
+            mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
+            sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_-mean_,2)))
+            # ----------------------------------------------------------------
 
-        log_ell = torch.log(torch.clamp(S_adj, min=eps)) - torch.log(torch.clamp(n_adj, min=1))
+            if self.type == 'log' or self.type == 'sqrt':
+                fp = 1. + torch.exp(-1./self.pos_b * ((feats[i] @ best_pos_proto) - self.pos_a))
+                fn = 1. + torch.exp( 1./self.neg_b * ((feats[i] @ best_neg_proto) - self.neg_a))
+                if self.type == 'log':
+                    pos_loss = torch.log(fp)
+                    neg_loss = torch.log(fn)
+                else:
+                    pos_loss = torch.sqrt(fp)
+                    neg_loss = torch.sqrt(fn)
+            else:
+                pos_loss = 1. + self.loss_weight_p * torch.exp(-1. / self.pos_b * ((feats[i] @ best_pos_proto) - self.pos_a))
+                neg_loss = 1. + self.loss_weight_n * torch.exp(1. / self.neg_b * ((feats[i] @ best_neg_proto) - self.neg_a))
+            pos_neg_loss = sigma_ #torch.abs(mean_-mean) + torch.abs(sigma_-sigma)
+            loss.append((pos_loss + neg_loss + self.weight*pos_neg_loss))
 
-        logsumexp_all = torch.logsumexp(log_ell, dim=1)     # [B]
-        true_ld = (log_ell * H).sum(dim=1)                  # [B]
-        main_loss = logsumexp_all - true_ld                 # [B]
+        if len(loss) == 0:
+            return torch.zeros(1, requires_grad=True).cuda()
 
-        own_class_count = (H * n_full.unsqueeze(0)).sum(dim=1)  # [B]
-        main_valid = own_class_count > 1                        # False iff sample is sole member of its class
-
-        # --- MVC regularizer: vectorized, same formula as every other file ---
-        same_class = labels.unsqueeze(0) == labels.unsqueeze(1)          # [B, B]
-        eye = torch.eye(batch_size, dtype=torch.bool, device=self.device)
-        pos_mask = same_class & ~eye
-        neg_mask = ~same_class
-
-        pos_count = pos_mask.sum(dim=1).clamp(min=1)
-        neg_count = neg_mask.sum(dim=1).clamp(min=1)
-        pos_mean = (sim_mat * pos_mask).sum(dim=1) / pos_count
-        neg_mean = (sim_mat * neg_mask).sum(dim=1) / neg_count
-        mean_ = self.hyper_weight * pos_mean + (1 - self.hyper_weight) * neg_mean  # [B]
-
-        diff_sq = (sim_mat - mean_.unsqueeze(1)) ** 2
-        sigma_ = (diff_sq * neg_mask).sum(dim=1)  # [B], SUM not mean, matching cbml.py exactly
-
-        mvc_valid = (pos_mask.sum(dim=1) > 0) & (neg_mask.sum(dim=1) > 0)
-
-        valid = main_valid & mvc_valid
-        sample_loss = main_loss + self.weight * sigma_
-        sample_loss = torch.where(valid, sample_loss, torch.zeros_like(sample_loss))
-
-        return sample_loss.sum() / batch_size
+        loss = sum(loss) / batch_size
+        return loss
