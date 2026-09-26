@@ -64,7 +64,7 @@ def train(cfg):
             save_prototype_cache(cache_path, key_dict, prototypes, cluster_sizes)
             logger.info(f"Saved prototype cache to {cache_path}")
 
-        criterion.set_prototypes_and_weights(prototypes, cluster_sizes)
+        criterion.set_prototypes(prototypes)
         del prototypes
         torch.cuda.empty_cache()
         gc.collect()
