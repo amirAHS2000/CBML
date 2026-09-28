@@ -32,8 +32,8 @@ class CBMLLoss(nn.Module):
             torch.zeros(self.num_classes, self.prototypes_per_class, self.embed_dim, device=self.device)
         )
 
-        self.register_buffer('pos_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
-        self.register_buffer('neg_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
+        self.register_buffer('pos_proto_counts', torch.zeros(self.num_classes, self.prototypes_per_class, dtype=torch.long))
+        self.register_buffer('neg_proto_counts', torch.zeros(self.num_classes, self.prototypes_per_class, dtype=torch.long))
 
 
     @torch.no_grad()
