@@ -32,6 +32,10 @@ class CBMLLoss(nn.Module):
             torch.zeros(self.num_classes, self.prototypes_per_class, self.embed_dim, device=self.device)
         )
 
+        self.register_buffer('pos_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
+        self.register_buffer('neg_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
+
+
     @torch.no_grad()
     def set_prototypes(self, prototypes):
         prototypes = prototypes.to(self.device)
@@ -65,6 +69,8 @@ class CBMLLoss(nn.Module):
             best_pos_proto_idx = torch.argmax(pos_sim).item()
             best_pos_proto = P_3d[positive_class, best_pos_proto_idx]
 
+            self.pos_proto_counts[positive_class, best_pos_proto_idx] += 1
+
             # negative selection
             neg_mask = torch.arange(C, device=self.device) != positive_class
             neg_class_indices = torch.where(neg_mask)[0]  # absolute class indices
@@ -78,6 +84,8 @@ class CBMLLoss(nn.Module):
             best_neg_class_idx = neg_class_indices[best_neg_class_idx_masked].item()
             best_neg_proto_idx = best_neg_proto_idx.item()
             best_neg_proto = P_3d[best_neg_class_idx, best_neg_proto_idx]
+
+            self.neg_proto_counts[best_neg_class_idx, best_neg_proto_idx] += 1
 
             # ------------------------ MVC term ------------------------------
             # Unchanged from the original CBML loss -- still computed on real
