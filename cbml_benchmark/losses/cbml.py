@@ -52,7 +52,7 @@ class CBMLLoss(nn.Module):
         P_3d = F.normalize(self.prototypes, p=2, dim=-1)   # [C, K, D] -- used for indexing
         P_flat = P_3d.view(C * K, -1)                      # [C*K, D]  -- used for the matmul only
 
-        sim_mat = torch.matmul(feats, torch.t(feats))
+        # sim_mat = torch.matmul(feats, torch.t(feats))
         feat_proto_sim_mat = torch.matmul(feats, torch.t(P_flat))       # [B, C*K]
         feat_proto_sim_mat = feat_proto_sim_mat.view(batch_size, C, K)  # [B, C, K]
         epsilon = 1e-5
@@ -82,15 +82,15 @@ class CBMLLoss(nn.Module):
             # ------------------------ MVC term ------------------------------
             # Unchanged from the original CBML loss -- still computed on real
             # instance-to-instance similarities, not prototypes.
-            pos_pair_ = sim_mat[i][labels == labels[i]]
-            pos_pair_ = pos_pair_[pos_pair_ < 1 - epsilon]
-            neg_pair_ = sim_mat[i][labels != labels[i]]
+            # pos_pair_ = sim_mat[i][labels == labels[i]]
+            # pos_pair_ = pos_pair_[pos_pair_ < 1 - epsilon]
+            # neg_pair_ = sim_mat[i][labels != labels[i]]
 
-            if len(neg_pair_) < 1 or len(pos_pair_) < 1:
-                continue
+            # if len(neg_pair_) < 1 or len(pos_pair_) < 1:
+            #     continue
 
-            mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
-            sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
+            # mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
+            # sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
             # ----------------------------------------------------------------
 
             if self.type == 'log' or self.type == 'sqrt':
@@ -105,8 +105,9 @@ class CBMLLoss(nn.Module):
             else:
                 pos_loss = 1. + self.loss_weight_p * torch.exp(-1. / self.pos_b * ((feats[i] @ best_pos_proto) - self.pos_a))
                 neg_loss = 1. + self.loss_weight_n * torch.exp(1. / self.neg_b * ((feats[i] @ best_neg_proto) - self.neg_a))
-            pos_neg_loss = sigma_
-            loss.append((pos_loss + neg_loss + self.weight * pos_neg_loss))
+            # pos_neg_loss = sigma_
+            # loss.append((pos_loss + neg_loss + self.weight * pos_neg_loss))
+            loss.append((pos_loss + neg_loss))
 
         if len(loss) == 0:
             return torch.zeros(1, requires_grad=True).cuda()
