@@ -5,15 +5,15 @@ from .lr_scheduler import WarmupMultiStepLR
 
 def build_optimizer(cfg, model, loss_param=None):
     params = []
-    lr_mul = 1.0
     for key, value in model.named_parameters():
         if not value.requires_grad:
             continue
-        if "backbone" in key:
-            lr_mul = 0.1
-        params += [{"params": [value], "lr_mul": lr_mul}]
-    if loss_param is not None: # for soft triplet loss
-        params += [{"params": loss_param.parameters(), "lr_mul": lr_mul}]
+        mul = 0.1 if "backbone" in key else 1.0
+        params.append({"params": [value], "lr": cfg.SOLVER.BASE_LR * mul})
+    if loss_param is not None:
+        params.append({"params": list(loss_param.parameters()),
+                    "lr": cfg.SOLVER.BASE_LR * cfg.SOLVER.PROTO_LR_MUL,
+                    "weight_decay": 0.0})
     optimizer = getattr(torch.optim, cfg.SOLVER.OPTIMIZER_NAME)(params,
                                                                 lr=cfg.SOLVER.BASE_LR,
                                                                 weight_decay=cfg.SOLVER.WEIGHT_DECAY)
