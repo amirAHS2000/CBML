@@ -10,6 +10,8 @@ from cbml_benchmark.data.evaluations import RetMetric
 from cbml_benchmark.utils.feat_extractor import feat_extractor
 from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
+from cbml_benchmark.utils.proto_stats import ProtoStatsLogger
+from cbml_benchmark.utils.prototype_initializer import reinitialize_prototypes
 
 
 def do_train(
@@ -34,6 +36,11 @@ def do_train(
     logger.info("Start training")
     meters = MetricLogger(delimiter="  ")  # For tracking and logging training metrics.
     max_iter = len(train_loader)  # Total number of iterations.
+
+    use_proxy = cfg.LOSSES.NAME == 'cbml_loss'
+    if use_proxy:
+        proto_logger = ProtoStatsLogger(criterion, out_dir=os.path.join(cfg.SAVE_DIR, 'proto_stats'),
+                                        flush_every=20, reset_counts_every=1000)
 
     # Initialize tracking variables for best model and time.
     start_iter = arguments["iteration"]
@@ -102,6 +109,12 @@ def do_train(
             train_recalls_over_iters.append(recall_curr_train_eval)
             val_recalls_over_iters.append(recall_curr)
 
+
+        if use_proxy and cfg.SOLVER.PROTO_REINIT_ITER > 0 and iteration == cfg.SOLVER.PROTO_REINIT_ITER:
+            logger.info(f"Re-initializing prototypes at iteration {iteration}")
+            reinitialize_prototypes(model, criterion, optimizer, cfg)
+            proto_logger.set_reference()
+
         # Switch back to training mode.
         model.train()
         model.apply(set_bn_eval)  # Freeze BatchNorm layers during training.
@@ -137,6 +150,9 @@ def do_train(
             # Only use primary loss if no auxiliary loss is provided.
             loss = criterion(feats, targets)
 
+        if use_proxy:
+            proto_logger.update(feats, targets, step=iteration - 1)   # iteration was already incremented
+
         # Backward pass and optimization.
         optimizer.zero_grad()  # Clear previous gradients.
         loss.backward()        # Compute gradients.
@@ -159,14 +175,14 @@ def do_train(
                         "eta: {eta}",
                         "iter: {iter}",
                         "{meters}",
-                        "lr: {lr:.6f}",
+                        "lr: {lr}",
                         "max mem: {memory:.1f} GB",
                     ]
                 ).format(
                     eta=eta_string,
                     iter=iteration,
                     meters=str(meters),
-                    lr=optimizer.param_groups[0]["lr"],
+                    lr=", ".join(f"{v:.2e}" for v in sorted({g['lr'] for g in optimizer.param_groups})),
                     memory=torch.cuda.max_memory_allocated() / 1024.0 / 1024.0 / 1024.0,
                 )
             )
@@ -174,6 +190,9 @@ def do_train(
         # Save model checkpoint periodically.
         # if iteration % checkpoint_period == 0:
         #     checkpointer.save("model_{:06d}".format(iteration))
+        
+    if use_proxy:
+        proto_logger.flush(iteration)
 
     # ====================================================================
     # POST-TRAINING: PLOTTING
