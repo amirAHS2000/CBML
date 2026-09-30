@@ -33,7 +33,7 @@ LOSSES:
     WEIGHT: 1.0
     INIT_METHOD: 'kmeans'
     N_CLASSES: 100
-    PROTOTYPE_PER_CLASS: 5
+    PROTOTYPE_PER_CLASS: 3
 
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt
