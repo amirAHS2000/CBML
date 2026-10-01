@@ -32,6 +32,9 @@ class CBMLLoss(nn.Module):
             torch.zeros(self.num_classes, self.prototypes_per_class, self.embed_dim, device=self.device)
         )
 
+        # MVC term
+        self.last_mvc = None # detached batch-mean MVC, for logging
+
         self.register_buffer('pos_proto_counts', torch.zeros(self.num_classes, self.prototypes_per_class, dtype=torch.long))
         self.register_buffer('neg_proto_counts', torch.zeros(self.num_classes, self.prototypes_per_class, dtype=torch.long))
 
@@ -61,6 +64,7 @@ class CBMLLoss(nn.Module):
         feat_proto_sim_mat = feat_proto_sim_mat.view(batch_size, C, K)  # [B, C, K]
         epsilon = 1e-5
         loss = list()
+        mvc_vals = []
 
         for i in range(batch_size):
 
@@ -88,17 +92,12 @@ class CBMLLoss(nn.Module):
             self.neg_proto_counts[best_neg_class_idx, best_neg_proto_idx] += 1
 
             # ------------------------ MVC term ------------------------------
-            # Unchanged from the original CBML loss -- still computed on real
-            # instance-to-instance similarities, not prototypes.
-            # pos_pair_ = sim_mat[i][labels == labels[i]]
-            # pos_pair_ = pos_pair_[pos_pair_ < 1 - epsilon]
-            # neg_pair_ = sim_mat[i][labels != labels[i]]
-
-            # if len(neg_pair_) < 1 or len(pos_pair_) < 1:
-            #     continue
-
-            # mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
-            # sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
+            sims_i = feat_proto_sim_mat[i] # [C, K]
+            neg_sim = sims_i[neg_mask].reshape(-1)
+            ref_pos = sims_i[positive_class].mean()
+            xi = self.hyper_weight * ref_pos + (1 - self.hyper_weight) * neg_sim.mean()
+            mvc_i = (neg_sim - xi).pow(2).mean()
+            mvc_vals.append(mvc_i.detach())
             # ----------------------------------------------------------------
 
             if self.type == 'log' or self.type == 'sqrt':
@@ -115,7 +114,10 @@ class CBMLLoss(nn.Module):
                 neg_loss = 1. + self.loss_weight_n * torch.exp(1. / self.neg_b * ((feats[i] @ best_neg_proto) - self.neg_a))
             # pos_neg_loss = sigma_
             # loss.append((pos_loss + neg_loss + self.weight * pos_neg_loss))
-            loss.append((pos_loss + neg_loss))
+            loss.append((pos_loss + neg_loss + self.weight * mvc_i))
+
+        if mvc_vals:
+            self.last_mvc = torch.stack(mvc_vals).mean()
 
         if len(loss) == 0:
             return torch.zeros(1, requires_grad=True).cuda()

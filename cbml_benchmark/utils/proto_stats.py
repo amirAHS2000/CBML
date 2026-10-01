@@ -113,6 +113,7 @@ class ProtoStatsLogger:
             "gate_neg_frac_gt_0.01": (g_n > 0.01).float().mean().item(),
             "loss_pos": F.softplus(z_p).mean().item(),
             "loss_neg": F.softplus(z_n).mean().item(),
+            "mvc_last": (float(c.last_mvc) if getattr(c, "last_mvc", None) is not None else None),
         }
         st.update(_dist(s_pos, "s_pos"))
         st.update(_dist(s_neg, "s_neg"))

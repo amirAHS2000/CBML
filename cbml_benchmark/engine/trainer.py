@@ -164,6 +164,8 @@ def do_train(
 
         # Update metrics and log.
         meters.update(time=batch_time, data=data_time, loss=loss.item())
+        if use_proxy and getattr(criterion, "last_mvc", None) is not None:
+            meters.update(mvc=criterion.last_mvc.item())
         eta_seconds = meters.time.global_avg * (max_iter - iteration)
         eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
 
