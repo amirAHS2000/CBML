@@ -59,7 +59,7 @@ class CBMLLoss(nn.Module):
         P_3d = F.normalize(self.prototypes, p=2, dim=-1)   # [C, K, D] -- used for indexing
         P_flat = P_3d.view(C * K, -1)                      # [C*K, D]  -- used for the matmul only
 
-        # sim_mat = torch.matmul(feats, torch.t(feats))
+        sim_mat = torch.matmul(feats, torch.t(feats))
         feat_proto_sim_mat = torch.matmul(feats, torch.t(P_flat))       # [B, C*K]
         feat_proto_sim_mat = feat_proto_sim_mat.view(batch_size, C, K)  # [B, C, K]
         epsilon = 1e-5
@@ -92,11 +92,17 @@ class CBMLLoss(nn.Module):
             self.neg_proto_counts[best_neg_class_idx, best_neg_proto_idx] += 1
 
             # ------------------------ MVC term ------------------------------
-            sims_i = feat_proto_sim_mat[i] # [C, K]
-            neg_sim = sims_i[neg_mask].reshape(-1)
-            ref_pos = sims_i[positive_class].mean()
-            xi = self.hyper_weight * ref_pos + (1 - self.hyper_weight) * neg_sim.mean()
-            mvc_i = (neg_sim - xi).pow(2).mean()
+            # Unchanged from the original CBML loss -- still computed on real
+            # instance-to-instance similarities, not prototypes.
+            pos_inst = sim_mat[i][labels == labels[i]]
+            pos_inst = pos_inst[pos_inst < 1 - epsilon]          # drop the self-pair
+            neg_inst = sim_mat[i][labels != labels[i]]
+            if len(pos_inst) >= 1 and len(neg_inst) >= 1:
+                xi = self.hyper_weight * pos_inst.mean() + (1 - self.hyper_weight) * neg_inst.mean()
+                mvc_i = (neg_inst - xi).pow(2).mean()
+            else:
+                mvc_i = feats.new_zeros(())
+
             mvc_vals.append(mvc_i.detach())
             # ----------------------------------------------------------------
 
