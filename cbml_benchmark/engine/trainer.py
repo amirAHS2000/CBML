@@ -210,25 +210,26 @@ def do_train(
         plt.savefig(os.path.join(cfg.SAVE_DIR, f'recall_at_{k}_iter_{iteration}.png'))
         plt.close()  # Close to free memory
 
-    # Positive & Negative prototype usage heatmap
-    pos_proto_usage = criterion.pos_proto_counts.cpu().numpy() # [C, K]
-    neg_proto_usage = criterion.neg_proto_counts.cpu().numpy() # [C, K]
+    if use_proxy:
+        # Positive & Negative prototype usage heatmap
+        pos_proto_usage = criterion.pos_proto_counts.cpu().numpy() # [C, K]
+        neg_proto_usage = criterion.neg_proto_counts.cpu().numpy() # [C, K]
 
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(pos_proto_usage, annot=False, cmap='YlOrRd', cbar_kws={'label': 'Selection count'})
-    plt.xlabel('Positive Prototype index')
-    plt.ylabel('Class index')
-    plt.title('Positive Prototype selection heatmap')
-    plt.savefig(os.path.join(cfg.SAVE_DIR, 'positive_prototype_selection.png'), dpi=150)
-    plt.close()
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(pos_proto_usage, annot=False, cmap='YlOrRd', cbar_kws={'label': 'Selection count'})
+        plt.xlabel('Positive Prototype index')
+        plt.ylabel('Class index')
+        plt.title('Positive Prototype selection heatmap')
+        plt.savefig(os.path.join(cfg.SAVE_DIR, 'positive_prototype_selection.png'), dpi=150)
+        plt.close()
 
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(neg_proto_usage, annot=False, cmap='YlOrRd', cbar_kws={'label': 'Selection count'})
-    plt.xlabel('Negative Prototype index')
-    plt.ylabel('Class index')
-    plt.title('Negative Prototype selection heatmap')
-    plt.savefig(os.path.join(cfg.SAVE_DIR, 'negative_prototype_selection.png'), dpi=150)
-    plt.close()
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(neg_proto_usage, annot=False, cmap='YlOrRd', cbar_kws={'label': 'Selection count'})
+        plt.xlabel('Negative Prototype index')
+        plt.ylabel('Class index')
+        plt.title('Negative Prototype selection heatmap')
+        plt.savefig(os.path.join(cfg.SAVE_DIR, 'negative_prototype_selection.png'), dpi=150)
+        plt.close()
 
     # Log total training time.
     total_training_time = time.time() - start_training_time
