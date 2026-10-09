@@ -1,4 +1,5 @@
 import os
+import json
 import datetime
 import time
 import numpy as np
@@ -12,6 +13,7 @@ from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
 from cbml_benchmark.utils.proto_stats import ProtoStatsLogger
 from cbml_benchmark.utils.prototype_initializer import reinitialize_prototypes
+from cbml_benchmark.utils.gen_diagnostics import GenDiagLogger, plot_gen_diag
 
 
 def do_train(
@@ -42,12 +44,24 @@ def do_train(
         proto_logger = ProtoStatsLogger(criterion, out_dir=os.path.join(cfg.SAVE_DIR, 'proto_stats'),
                                         flush_every=20, reset_counts_every=1000)
 
+    # ---- generalization diagnostics (V1, V2, V3, d', geometry); see gen_diagnostics.py ----
+    gen_logger = None
+    if 'DIAG' in cfg and cfg.DIAG.ENABLE:
+        gen_logger = GenDiagLogger(
+            out_dir=os.path.join(cfg.SAVE_DIR, 'gen_diag'),
+            per_class=cfg.DIAG.PER_CLASS,
+            seed=cfg.DATA.EVAL_TRAIN_SUBSAMPLE_SEED,   # same images in every eval and every run
+            ramp_gamma=cfg.DIAG.RAMP_GAMMA,
+            xi_gamma=cfg.DIAG.XI_GAMMA)
+    else:
+        logger.warning("cfg.DIAG missing or disabled: generalization diagnostics are OFF "
+                       "(add the DIAG block to defaults.py).")
+
     # Initialize tracking variables for best model and time.
     start_iter = arguments["iteration"]
-    best_iteration = -1
-    best_recall = 0
+    state = {"best_iteration": -1, "best_recall": 0.0}
 
-    # Store recalls for plotting
+    # Store recalls for plotting / results.json
     train_recalls_over_iters = []
     val_recalls_over_iters = []
     iters = []
@@ -56,63 +70,59 @@ def do_train(
     start_training_time = time.time()
     end = time.time()
 
+    # ------------------------------------------------------------------------
+    # Evaluation (val = test classes, train = train-eval subsample, diagnostics)
+    # ------------------------------------------------------------------------
+    def evaluate(it):
+        model.eval()  # Set model to evaluation mode.
+        logger.info('Validation')
+
+        # Extract labels and features for validation set.
+        labels = val_loader.dataset.label_list
+        labels = np.array([int(k) for k in labels])
+        feats = feat_extractor(model, val_loader, logger=logger)  # Feature extraction.
+
+        # Compute retrieval metrics (e.g., recall at K).
+        ret_metric = RetMetric(feats=feats, labels=labels)
+        recall_curr = [ret_metric.recall_k(k) for k in (1, 2, 4, 8)]
+        logger.info(f'Val Recalls: {recall_curr}')
+
+        # Update best (recall@1 on the TEST classes -- kept for comparability only).
+        if recall_curr[0] > state["best_recall"]:
+            state["best_recall"] = recall_curr[0]
+            state["best_iteration"] = it
+            logger.info(f'Best iteration {it}: recall@1: {recall_curr[0]:.3f}')
+        else:
+            logger.info(f'Recall@1 at iteration {it:06d}: recall@1: {recall_curr[0]:.3f}')
+
+        # Recalls on the training classes
+        train_eval_labels = eval_train_loader.dataset.label_list
+        train_eval_labels = np.array([int(k) for k in train_eval_labels])
+        train_eval_feats = feat_extractor(model, eval_train_loader, logger=logger)
+
+        ret_metric_train_eval = RetMetric(feats=train_eval_feats, labels=train_eval_labels)
+        recall_curr_train_eval = [ret_metric_train_eval.recall_k(k) for k in (1, 2, 4, 8)]
+        logger.info(f'Train Recalls: {recall_curr_train_eval}')
+
+        # V1/V2/V3, d', Lemma-1 geometry on train classes vs. test classes
+        if gen_logger is not None:
+            gen_logger.log_pair(it, train_eval_feats, train_eval_labels, feats, labels, logger)
+
+        iters.append(it)
+        train_recalls_over_iters.append(recall_curr_train_eval)
+        val_recalls_over_iters.append(recall_curr)
+
     for iteration, (images, targets) in enumerate(train_loader, start_iter):
         # ====================================================================
-        # VALIDATION
+        # VALIDATION (before the update of this iteration, i.e. after `iteration` updates)
         # ====================================================================
-        # Perform validation periodically or at the end of training.
         if iteration % cfg.VALIDATION.VERBOSE == 0 or iteration == max_iter:
-            model.eval()  # Set model to evaluation mode.
-            logger.info('Validation')
-            
-            # Extract labels and features for validation set.
-            labels = val_loader.dataset.label_list
-            labels = np.array([int(k) for k in labels])
-            feats = feat_extractor(model, val_loader, logger=logger)  # Feature extraction.
-
-            # Compute retrieval metrics (e.g., recall at K).
-            ret_metric = RetMetric(feats=feats, labels=labels)
-            recall_curr = []
-            recall_curr.append(ret_metric.recall_k(1))
-            recall_curr.append(ret_metric.recall_k(2))
-            recall_curr.append(ret_metric.recall_k(4))
-            recall_curr.append(ret_metric.recall_k(8))
-
-            # Log current recall metrics.
-            logger.info(f'Val Recalls: {recall_curr}')
-
-            # Update best model if recall@1 improves.
-            if recall_curr[0] > best_recall:
-                best_recall = recall_curr[0]
-                best_iteration = iteration
-                logger.info(f'Best iteration {iteration}: recall@1: {recall_curr[0]:.3f}')
-                # checkpointer.save(f"best_model")
-            else:
-                logger.info(f'Recall@1 at iteration {iteration:06d}: recall@1: {recall_curr[0]:.3f}')
-
-            # Compute recalls on training set
-            train_eval_labels = eval_train_loader.dataset.label_list
-            train_eval_labels = np.array([int(k) for k in train_eval_labels])
-            train_eval_feats = feat_extractor(model, eval_train_loader, logger=logger)
-
-            ret_metric_train_eval = RetMetric(feats=train_eval_feats, labels=train_eval_labels)
-            recall_curr_train_eval = []
-            recall_curr_train_eval.append(ret_metric_train_eval.recall_k(1))
-            recall_curr_train_eval.append(ret_metric_train_eval.recall_k(2))
-            recall_curr_train_eval.append(ret_metric_train_eval.recall_k(4))
-            recall_curr_train_eval.append(ret_metric_train_eval.recall_k(8))
-            
-            logger.info(f'Train Recalls: {recall_curr_train_eval}')
-
-            # store for plotting
-            iters.append(iteration)
-            train_recalls_over_iters.append(recall_curr_train_eval)
-            val_recalls_over_iters.append(recall_curr)
-
+            evaluate(iteration)
 
         if use_proxy and cfg.SOLVER.PROTO_REINIT_ITER > 0 and iteration == cfg.SOLVER.PROTO_REINIT_ITER:
             logger.info(f"Re-initializing prototypes at iteration {iteration}")
-            reinitialize_prototypes(model, criterion, optimizer, cfg)
+            # k-means seed follows the run seed
+            reinitialize_prototypes(model, criterion, optimizer, cfg, seed=int(cfg.SOLVER.RNG_SEED))
             proto_logger.set_reference()
 
         # Switch back to training mode.
@@ -125,6 +135,8 @@ def do_train(
         arguments["iteration"] = iteration
 
         # Update learning rate scheduler.
+        # (kept before optimizer.step() on purpose: moving it would shift the LR
+        #  schedule by one step and make new runs incomparable with the old ones)
         scheduler.step()
 
         # Move data to the specified device.
@@ -171,6 +183,7 @@ def do_train(
 
         # Log training progress every 20 iterations or at the end.
         if iteration % 20 == 0 or iteration == max_iter:
+            mem_gb = torch.cuda.max_memory_allocated() / 1024.0 / 1024.0 / 1024.0 if torch.cuda.is_available() else 0.0
             logger.info(
                 meters.delimiter.join(
                     [
@@ -185,14 +198,22 @@ def do_train(
                     iter=iteration,
                     meters=str(meters),
                     lr=", ".join(f"{v:.2e}" for v in sorted({g['lr'] for g in optimizer.param_groups})),
-                    memory=torch.cuda.max_memory_allocated() / 1024.0 / 1024.0 / 1024.0,
+                    memory=mem_gb,
                 )
             )
 
         # Save model checkpoint periodically.
         # if iteration % checkpoint_period == 0:
         #     checkpointer.save("model_{:06d}".format(iteration))
-        
+
+    # ====================================================================
+    # FINAL EVALUATION: the loop above only evaluates BEFORE an update, so the
+    # model after the very last update was never evaluated.  `iteration` now
+    # equals the number of completed updates.
+    # ====================================================================
+    if not iters or iters[-1] != iteration:
+        evaluate(iteration)
+
     if use_proxy:
         proto_logger.flush(iteration)
 
@@ -210,10 +231,16 @@ def do_train(
         plt.savefig(os.path.join(cfg.SAVE_DIR, f'recall_at_{k}_iter_{iteration}.png'))
         plt.close()  # Close to free memory
 
-    if use_proxy:
-        # Positive & Negative prototype usage heatmap
-        pos_proto_usage = criterion.pos_proto_counts.cpu().numpy() # [C, K]
-        neg_proto_usage = criterion.neg_proto_counts.cpu().numpy() # [C, K]
+    if gen_logger is not None:
+        try:
+            plot_gen_diag(gen_logger.path, os.path.join(cfg.SAVE_DIR, 'gen_diag', 'gen_diag.png'))
+        except Exception as e:  # diagnostics must never break the run
+            logger.warning(f"[gen-diag] plotting failed: {e!r}")
+
+    # Positive & Negative prototype usage heatmap (prototype losses only)
+    if use_proxy and hasattr(criterion, "pos_proto_counts"):
+        pos_proto_usage = criterion.pos_proto_counts.cpu().numpy()  # [C, K]
+        neg_proto_usage = criterion.neg_proto_counts.cpu().numpy()  # [C, K]
 
         plt.figure(figsize=(10, 8))
         sns.heatmap(pos_proto_usage, annot=False, cmap='YlOrRd', cbar_kws={'label': 'Selection count'})
@@ -241,7 +268,39 @@ def do_train(
     )
 
     # Log the best iteration and recall achieved.
-    logger.info(f"Best iteration: {best_iteration :06d} | best recall {best_recall} ")
+    logger.info(f"Best iteration: {state['best_iteration']:06d} | best recall {state['best_recall']} ")
+
+    # ====================================================================
+    # results.json: everything needed to aggregate several seeds later.
+    # plateau = mean over all evaluations AFTER the last LR drop (iteration > STEPS[-1]);
+    # it includes the final evaluation at the last iteration.
+    # ====================================================================
+    steps = list(cfg.SOLVER.STEPS)
+    plateau_start = steps[-1] if steps else int(0.75 * max_iter)
+    idx = [i for i, it in enumerate(iters) if it > plateau_start]
+    plateau_val = np.mean([val_recalls_over_iters[i] for i in idx], axis=0).tolist() if idx else None
+    plateau_train = np.mean([train_recalls_over_iters[i] for i in idx], axis=0).tolist() if idx else None
+    results = {
+        "seed": int(cfg.SOLVER.RNG_SEED),
+        "save_dir": cfg.SAVE_DIR,
+        "iters": iters,
+        "val_recalls": val_recalls_over_iters,        # [n_eval, 4]  R@1,2,4,8
+        "train_recalls": train_recalls_over_iters,    # [n_eval, 4]
+        "final_iteration": int(iteration),
+        "final_val": val_recalls_over_iters[-1],
+        "final_train": train_recalls_over_iters[-1],
+        "plateau_start": plateau_start,
+        "plateau_val": plateau_val,
+        "plateau_train": plateau_train,
+        "best_iteration_test_selected": state["best_iteration"],
+        "best_recall_test_selected": state["best_recall"],
+        "training_time_s": total_training_time,
+        "config": cfg.dump(),
+    }
+    with open(os.path.join(cfg.SAVE_DIR, 'results.json'), 'w') as f:
+        json.dump(results, f, indent=1, default=float)
+    logger.info(f"Final val R@1..8 (iteration {iteration}): {results['final_val']} | "
+                f"plateau (> {plateau_start}) val: {plateau_val}")
 
 
 def do_test(

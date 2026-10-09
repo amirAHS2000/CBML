@@ -51,6 +51,12 @@ _C.LOSSES.CBML_LOSS.INIT_METHOD = 'kmeans'
 _C.LOSSES.CBML_LOSS.THETA_IS_LEARNABLE = False
 _C.LOSSES.CBML_LOSS.INIT_THETA = 1.0
 
+_C.DIAG = CN()
+_C.DIAG.ENABLE = True
+_C.DIAG.PER_CLASS = 8     # images per class used for the diagnostics (balanced)
+_C.DIAG.RAMP_GAMMA = 0.1  # gamma of the ramp surrogate in the bound
+_C.DIAG.XI_GAMMA = 0.2    # gamma of the paper's MVC target xi
+
 # softtriple_loss
 _C.LOSSES.SOFTTRIPLE_LOSS = CN()
 _C.LOSSES.SOFTTRIPLE_LOSS.LA = 20
@@ -179,6 +185,7 @@ _C.SOLVER.CHECKPOINT_PERIOD = 200
 _C.SOLVER.RNG_SEED = 1
 _C.SOLVER.PROTO_LR_MUL = 100
 _C.SOLVER.PROTO_REINIT_ITER = 400
+_C.SOLVER.DETERMINISTIC = False      # True = slower, but closer to bit-identical
 
 # Logger
 _C.LOGGER = CN()
