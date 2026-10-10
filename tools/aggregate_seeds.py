@@ -3,8 +3,9 @@ Aggregate runs over seeds.
 
 Usage (Colab):
   !python3 tools/aggregate_seeds.py \
-      --group proto="output/proto_s*" \
-      --group orig="output/orig_s*"
+      --group proto="output/proto2_s*" \
+      --group orig="output/orig_noreg_s*" \
+      --group origmvc="output/orig_mvc_s*"
 
 Each matched directory must contain results.json (and, for the diagnostics,
 gen_diag/gen_diag.jsonl).  Reports mean +- std (ddof=1) over seeds and, if two
@@ -18,7 +19,9 @@ import os
 import numpy as np
 
 DIAG_KEYS = ["V1", "V2", "V3", "mean_delta", "z_trip", "trip_err_emp", "V_cls",
-             "radius_deg", "center_sep_nn_deg", "eff_rank_all"]
+             "radius_deg", "center_sep_nn_deg", "eff_rank_all", "mean_emb_norm_sq",
+             "mu_pos", "mu_neg"]
+SPLITS = ("train", "test", "train_c", "test_c", "test_c_own")
 
 
 def load_run(d):
@@ -29,12 +32,14 @@ def load_run(d):
     out.update(plateau_val=pv, plateau_train=pt, final_val=np.array(r["final_val"]) * 100,
                final_train=np.array(r["final_train"]) * 100)
     out["gap_R1"] = pt[0] - pv[0]
+    for key in ("plateau_val_centered_trainmean", "plateau_val_centered_own"):
+        out[key] = np.array(r[key]) * 100 if r.get(key) else None
     # diagnostics averaged over the same plateau evaluations
     p = os.path.join(d, "gen_diag", "gen_diag.jsonl")
     out["diag"] = {}
     if os.path.exists(p):
         recs = [json.loads(l) for l in open(p) if l.strip()]
-        for split in ("train", "test"):
+        for split in SPLITS:
             rr = [x for x in recs if x["split"] == split and x["iter"] > r["plateau_start"]]
             for k in DIAG_KEYS:
                 if rr:
@@ -64,21 +69,28 @@ def main():
         print(f"  final   val R@1: {ms([r['final_val'][0] for r in groups[name]])}")
         print(f"  plateau train R@1: {ms([r['plateau_train'][0] for r in groups[name]])}")
         print(f"  train-val gap (R@1): {ms([r['gap_R1'] for r in groups[name]])}")
+        for key, lab in (("plateau_val_centered_trainmean", "val R@1 centred (train mean)"),
+                         ("plateau_val_centered_own", "val R@1 centred (own mean)")):
+            vals = [r[key][0] for r in groups[name] if r.get(key) is not None]
+            if vals:
+                print(f"  plateau {lab}: {ms(vals)}")
         keys = sorted({k for r in groups[name] for k in r["diag"]})
         for k in keys:
             vals = [r["diag"][k] for r in groups[name] if k in r["diag"]]
             print(f"  diag {k:<28s}: {np.mean(vals):.5f} +- {np.std(vals, ddof=1) if len(vals) > 1 else float('nan'):.5f}")
 
     names = list(groups)
-    if len(names) == 2:
-        a, b = names
-        sa = {r["seed"]: r for r in groups[a]}
-        sb = {r["seed"]: r for r in groups[b]}
-        common = sorted(set(sa) & set(sb))
-        if common:
-            d = np.array([sa[s]["plateau_val"][0] - sb[s]["plateau_val"][0] for s in common])
-            print(f"\n=== paired difference {a} - {b} (plateau val R@1) over seeds {common}: "
-                  f"{d.mean():+.2f} +- {d.std(ddof=1) if len(d) > 1 else float('nan'):.2f}  (per seed: {np.round(d, 2).tolist()})")
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            a, b = names[i], names[j]
+            sa = {r["seed"]: r for r in groups[a]}
+            sb = {r["seed"]: r for r in groups[b]}
+            common = sorted(set(sa) & set(sb))
+            if common:
+                d = np.array([sa[s]["plateau_val"][0] - sb[s]["plateau_val"][0] for s in common])
+                print(f"\n=== paired difference {a} - {b} (plateau val R@1) over seeds {common}: "
+                      f"{d.mean():+.2f} +- {d.std(ddof=1) if len(d) > 1 else float('nan'):.2f}  "
+                      f"(per seed: {np.round(d, 2).tolist()})")
 
 
 if __name__ == "__main__":

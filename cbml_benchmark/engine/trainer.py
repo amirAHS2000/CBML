@@ -16,6 +16,22 @@ from cbml_benchmark.utils.prototype_initializer import reinitialize_prototypes
 from cbml_benchmark.utils.gen_diagnostics import GenDiagLogger, plot_gen_diag
 
 
+def _np(x):
+    return x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)
+
+
+def _unit(x):
+    x = np.asarray(x, dtype=np.float64)
+    return x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
+
+
+def _centered_recalls(f, lab, mean):
+    """R@1,2,4,8 after subtracting `mean` from L2-normalised features and re-normalising."""
+    fc = _unit(f - mean).astype(np.float32)
+    rm = RetMetric(feats=fc, labels=lab)
+    return [rm.recall_k(k) for k in (1, 2, 4, 8)]
+
+
 def do_train(
         cfg,               # Configuration object with training settings.
         model,             # Neural network model to train.
@@ -64,6 +80,9 @@ def do_train(
     # Store recalls for plotting / results.json
     train_recalls_over_iters = []
     val_recalls_over_iters = []
+    val_centered_tm = []     # test feats centred with the TRAIN mean (deployable)
+    val_centered_own = []    # test feats centred with their own mean (transductive reference)
+    train_centered = []      # train feats centred with the train mean
     iters = []
 
     # Start timers for training.
@@ -108,9 +127,26 @@ def do_train(
         if gen_logger is not None:
             gen_logger.log_pair(it, train_eval_feats, train_eval_labels, feats, labels, logger)
 
+        # retrieval after removing the common direction (mean embedding): cheap check of
+        # whether the shared component of the embedding hurts retrieval
+        try:
+            ft, fv = _unit(_np(train_eval_feats)), _unit(_np(feats))
+            m_tr = ft.mean(0, keepdims=True)
+            rc_tm = _centered_recalls(fv, labels, m_tr)
+            rc_own = _centered_recalls(fv, labels, fv.mean(0, keepdims=True))
+            rc_tr = _centered_recalls(ft, train_eval_labels, m_tr)
+            logger.info(f'Centred Val Recalls (train mean): {rc_tm} | (own mean): {rc_own} | '
+                        f'Centred Train Recalls: {rc_tr}')
+        except Exception as e:                      # noqa
+            logger.warning(f"[centred retrieval] skipped at iteration {it}: {e!r}")
+            rc_tm = rc_own = rc_tr = None
+
         iters.append(it)
         train_recalls_over_iters.append(recall_curr_train_eval)
         val_recalls_over_iters.append(recall_curr)
+        val_centered_tm.append(rc_tm)
+        val_centered_own.append(rc_own)
+        train_centered.append(rc_tr)
 
     for iteration, (images, targets) in enumerate(train_loader, start_iter):
         # ====================================================================
@@ -280,6 +316,10 @@ def do_train(
     idx = [i for i, it in enumerate(iters) if it > plateau_start]
     plateau_val = np.mean([val_recalls_over_iters[i] for i in idx], axis=0).tolist() if idx else None
     plateau_train = np.mean([train_recalls_over_iters[i] for i in idx], axis=0).tolist() if idx else None
+    def _plateau(lst):
+        rows = [lst[i] for i in idx if lst[i] is not None]
+        return np.mean(rows, axis=0).tolist() if rows else None
+
     results = {
         "seed": int(cfg.SOLVER.RNG_SEED),
         "save_dir": cfg.SAVE_DIR,
@@ -292,6 +332,12 @@ def do_train(
         "plateau_start": plateau_start,
         "plateau_val": plateau_val,
         "plateau_train": plateau_train,
+        "val_centered_trainmean": val_centered_tm,
+        "val_centered_own": val_centered_own,
+        "train_centered": train_centered,
+        "plateau_val_centered_trainmean": _plateau(val_centered_tm),
+        "plateau_val_centered_own": _plateau(val_centered_own),
+        "plateau_train_centered": _plateau(train_centered),
         "best_iteration_test_selected": state["best_iteration"],
         "best_recall_test_selected": state["best_recall"],
         "training_time_s": total_training_time,

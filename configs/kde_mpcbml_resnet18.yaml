@@ -23,6 +23,7 @@ SOLVER:
   PROTO_REINIT_ITER: 400
 
 LOSSES:
+  NAME: 'cbml_loss'
   CBML_LOSS:
     POS_A: 0.95
     POS_B: 0.02

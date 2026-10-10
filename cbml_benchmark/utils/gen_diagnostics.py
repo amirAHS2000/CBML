@@ -40,6 +40,11 @@ def _to_numpy(x):
     return np.asarray(x)
 
 
+def _unit_rows(X):
+    X = np.asarray(X, dtype=np.float64)
+    return X / np.maximum(np.linalg.norm(X, axis=1, keepdims=True), 1e-12)
+
+
 def _balanced_subsample(feats, labels, per_class, seed):
     """Exactly `per_class` images for every class that has at least that many."""
     rng = np.random.RandomState(seed)
@@ -85,6 +90,10 @@ def compute_generalization_stats(feats, labels, per_class=8, seed=0,
     assert len(X) == C * p
 
     S = X @ X.T                                   # [N, N] cosine similarities
+    Ntot = C * p
+    # exact: sum_ij <x_i,x_j> = N^2 ||xbar||^2  ->  squared norm of the mean embedding
+    mean_emb_norm_sq = float(S.sum() / Ntot ** 2)
+    mean_sim_offdiag = float((S.sum() - Ntot) / (Ntot * (Ntot - 1)))
     Sfull = S.reshape(C, p, C * p)
 
     # positives: off-diagonal of each class block -> [C, p, p-1]
@@ -156,6 +165,8 @@ def compute_generalization_stats(feats, labels, per_class=8, seed=0,
 
     return {
         "n_classes": int(C), "per_class": int(p),
+        "mean_emb_norm_sq": mean_emb_norm_sq, "mean_emb_norm": math.sqrt(max(mean_emb_norm_sq, 0.0)),
+        "mean_sim_offdiag": mean_sim_offdiag,
         "V1": V1, "V1_pos": V1_pos, "V1_neg": V1_neg, "V2": V2, "V3": V3,
         "var_total": total_var, "identity_err": identity_err,
         "mean_delta": mean_delta, "sd_delta": sd_delta, "z_trip": z_trip,
@@ -179,7 +190,7 @@ def compute_generalization_stats(feats, labels, per_class=8, seed=0,
 # keys reported as test - train in the "gap" record
 _GAP_KEYS = ["V1", "V2", "V3", "mean_delta", "z_trip", "trip_err_emp", "V_cls",
              "d_prime_pair", "radius_deg", "center_sep_nn_deg", "eff_rank_all",
-             "eff_rank_class_means", "mvc_paper"]
+             "eff_rank_class_means", "mvc_paper", "mean_emb_norm_sq"]
 
 
 # ----------------------------------------------------------------------------
@@ -221,7 +232,33 @@ class GenDiagLogger:
                     f"trip_err={s['trip_err_emp']:.4f} Vcls={s['V_cls']:.5f} "
                     f"radius={s['radius_deg']:.1f}deg sep_nn={s['center_sep_nn_deg']:.1f}deg "
                     f"effrank={s['eff_rank_all']:.1f}/{s['eff_rank_class_means']:.1f} "
+                    f"|fbar|^2={s['mean_emb_norm_sq']:.3f} "
                     f"(identity_err={s['identity_err']:.1e})")
+
+        # same statistics after removing the common direction (mean embedding):
+        #   train_c    : train features centred with the TRAIN mean
+        #   test_c     : test  features centred with the TRAIN mean   (deployable)
+        #   test_c_own : test  features centred with their OWN mean   (transductive reference)
+        try:
+            Xtr = _unit_rows(_to_numpy(train_feats))
+            Xte = _unit_rows(_to_numpy(test_feats))
+            m_tr = Xtr.mean(0, keepdims=True)
+            cen = {
+                "train_c": compute_generalization_stats(Xtr - m_tr, train_labels, **self.kw),
+                "test_c": compute_generalization_stats(Xte - m_tr, test_labels, **self.kw),
+                "test_c_own": compute_generalization_stats(Xte - Xte.mean(0, keepdims=True), test_labels, **self.kw),
+            }
+            for name, s in cen.items():
+                self._write({"iter": int(iteration), "split": name, **s})
+            if logger is not None:
+                logger.info(
+                    "[gen-diag centered] it=%d " % iteration + " | ".join(
+                        f"{n}: Dbar={s['mean_delta']:.3f} z={s['z_trip']:.2f} err={s['trip_err_emp']:.4f} "
+                        f"sep_nn={s['center_sep_nn_deg']:.1f}deg effrank={s['eff_rank_all']:.1f}"
+                        for n, s in cen.items()))
+        except Exception as e:                     # noqa
+            if logger is not None:
+                logger.warning(f"[gen-diag] centered stats skipped at iteration {iteration}: {e!r}")
         return tr, te
 
 
@@ -247,19 +284,30 @@ def plot_gen_diag(jsonl_path, out_path):
         ax.set_title(title, fontsize=9)
         ax.grid(alpha=.3)
 
-    fig, axs = plt.subplots(3, 4, figsize=(18, 11))
+    fig, axs = plt.subplots(3, 5, figsize=(22, 11))
     line(axs[0, 0], "V1", "V1 within-anchor variance")
     line(axs[0, 1], "V2", "V2 across anchors (within class)")
     line(axs[0, 2], "V3", "V3 across classes")
     line(axs[0, 3], "var_total", "Var(D) = V1+V2+V3")
+    line(axs[0, 4], "mean_emb_norm_sq", "|mean embedding|^2 (= mean pair sim.)")
     line(axs[1, 0], "mean_delta", "E[D] (mean triplet margin)")
     line(axs[1, 1], "z_trip", "z = E[D]/sd(D)")
     line(axs[1, 2], "trip_err_emp", "empirical triplet error P(D<=0)")
     line(axs[1, 3], "V_cls", "V_cls (across-class var. of ramp loss)")
+    line(axs[1, 4], "d_prime_pair", "d' (pair level)")
     line(axs[2, 0], "radius_deg", "class radius (deg)")
     line(axs[2, 1], "center_sep_nn_deg", "nearest class-centre separation (deg)")
     line(axs[2, 2], "eff_rank_all", "effective rank (all features)")
     line(axs[2, 3], "mvc_paper", "paper MVC quantity (xi-gamma)")
+    ax = axs[2, 4]
+    for nm, lab in (("train_c", "train (train-mean centred)"), ("test_c", "test (train-mean centred)"),
+                    ("test_c_own", "test (own-mean centred)")):
+        rr = [r for r in recs if r["split"] == nm]
+        if rr:
+            ax.plot([r["iter"] for r in rr], [r["z_trip"] for r in rr], "-o", ms=3, label=lab)
+    ax.set_title("z after centring", fontsize=9)
+    ax.grid(alpha=.3)
+    ax.legend(fontsize=7)
     axs[0, 0].legend(fontsize=8)
     for ax in axs[2]:
         ax.set_xlabel("iteration")

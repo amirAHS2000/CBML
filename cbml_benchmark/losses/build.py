@@ -1,5 +1,6 @@
 
 from .cbml import CBMLLoss
+from .cbml_original import CBMLOriginalLoss
 from .crossentropy_loss import CrossEntropyLoss
 from .margin_loss import MarginLoss
 from .multi_similarity_loss import MultiSimilarityLoss
