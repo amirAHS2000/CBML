@@ -22,7 +22,7 @@ SOLVER:
 
 LOSSES:
   NAME: 'cbml_original_loss'
-  CBML_LOSS:
+  CBML_ORIGINAL_LOSS:
     POS_A: 0.5
     POS_B: 0.5
     NEG_A: 1.0

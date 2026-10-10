@@ -11,17 +11,17 @@ from cbml_benchmark.losses.registry import LOSS
 class CBMLOriginalLoss(nn.Module):
     def __init__(self, cfg):
         super(CBMLOriginalLoss, self).__init__()
-        self.pos_a = cfg.LOSSES.CBML_LOSS.POS_A
-        self.pos_b = cfg.LOSSES.CBML_LOSS.POS_B
-        self.neg_a = cfg.LOSSES.CBML_LOSS.NEG_A
-        self.neg_b = cfg.LOSSES.CBML_LOSS.NEG_B
-        self.margin = cfg.LOSSES.CBML_LOSS.MARGIN
-        self.weight = cfg.LOSSES.CBML_LOSS.WEIGHT
-        self.hyper_weight = cfg.LOSSES.CBML_LOSS.HYPER_WEIGHT
-        self.adaptive_neg = cfg.LOSSES.CBML_LOSS.ADAPTIVE_NEG
-        self.type = cfg.LOSSES.CBML_LOSS.TYPE
-        self.loss_weight_p = cfg.LOSSES.CBML_LOSS.WEIGHT_P
-        self.loss_weight_n = cfg.LOSSES.CBML_LOSS.WEIGHT_N
+        self.pos_a = cfg.LOSSES.CBML_ORIGINAL_LOSS.POS_A
+        self.pos_b = cfg.LOSSES.CBML_ORIGINAL_LOSS.POS_B
+        self.neg_a = cfg.LOSSES.CBML_ORIGINAL_LOSS.NEG_A
+        self.neg_b = cfg.LOSSES.CBML_ORIGINAL_LOSS.NEG_B
+        self.margin = cfg.LOSSES.CBML_ORIGINAL_LOSS.MARGIN
+        self.weight = cfg.LOSSES.CBML_ORIGINAL_LOSS.WEIGHT
+        self.hyper_weight = cfg.LOSSES.CBML_ORIGINAL_LOSS.HYPER_WEIGHT
+        self.adaptive_neg = cfg.LOSSES.CBML_ORIGINAL_LOSS.ADAPTIVE_NEG
+        self.type = cfg.LOSSES.CBML_ORIGINAL_LOSS.TYPE
+        self.loss_weight_p = cfg.LOSSES.CBML_ORIGINAL_LOSS.WEIGHT_P
+        self.loss_weight_n = cfg.LOSSES.CBML_ORIGINAL_LOSS.WEIGHT_N
 
 
     def forward(self, feats, labels):
