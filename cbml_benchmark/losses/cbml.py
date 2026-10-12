@@ -32,6 +32,11 @@ class CBMLLoss(nn.Module):
             torch.zeros(self.num_classes, self.prototypes_per_class, self.embed_dim, device=self.device)
         )
 
+        self.mvc_one_sided = getattr(
+            cfg.LOSSES.CBML_LOSS,
+            'MVC_ONE_SIDED',
+            False
+        )
         # MVC term
         self.last_mvc = None # detached batch-mean MVC, for logging
 
@@ -99,7 +104,11 @@ class CBMLLoss(nn.Module):
             neg_inst = sim_mat[i][labels != labels[i]]
             if len(pos_inst) >= 1 and len(neg_inst) >= 1:
                 xi = self.hyper_weight * pos_inst.mean() + (1 - self.hyper_weight) * neg_inst.mean()
-                mvc_i = (neg_inst - xi).pow(2).mean()
+                if self.mvc_one_sided:
+                    xi = xi.detach()
+                    mvc_i = F.relu(neg_inst - xi).pow(2).mean()
+                else:
+                    mvc_i = (neg_inst - xi).pow(2).mean()
             else:
                 mvc_i = feats.new_zeros(())
 

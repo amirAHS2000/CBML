@@ -35,6 +35,7 @@ LOSSES:
     INIT_METHOD: 'kmeans'
     N_CLASSES: 100
     PROTOTYPE_PER_CLASS: 3
+    MVC_ONE_SIDED: False
 
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt
