@@ -37,6 +37,13 @@ class CBMLLoss(nn.Module):
             'MVC_ONE_SIDED',
             False
         )
+
+        self.mvc_ratio = getattr(
+            cfg.LOSSES.CBML_LOSS,
+            'MVC_RATIO',
+            False
+        )
+
         # MVC term
         self.last_mvc = None # detached batch-mean MVC, for logging
 
@@ -103,12 +110,16 @@ class CBMLLoss(nn.Module):
             pos_inst = pos_inst[pos_inst < 1 - epsilon]          # drop the self-pair
             neg_inst = sim_mat[i][labels != labels[i]]
             if len(pos_inst) >= 1 and len(neg_inst) >= 1:
-                xi = self.hyper_weight * pos_inst.mean() + (1 - self.hyper_weight) * neg_inst.mean()
-                if self.mvc_one_sided:
-                    xi = xi.detach()
-                    mvc_i = F.relu(neg_inst - xi).pow(2).mean()
+                if self.mvc_ratio:
+                    mu_p, mu_n = pos_inst.mean(), neg_inst.mean()
+                    mvc_i = (neg_inst - mu_n).pow(2).mean() / ((mu_p - mu_n).pow(2) + 1e-4)
                 else:
-                    mvc_i = (neg_inst - xi).pow(2).mean()
+                    xi = self.hyper_weight * pos_inst.mean() + (1 - self.hyper_weight) * neg_inst.mean()
+                    if self.mvc_one_sided:
+                        xi = xi.detach()
+                        mvc_i = F.relu(neg_inst - xi).pow(2).mean()
+                    else:
+                        mvc_i = (neg_inst - xi).pow(2).mean()
             else:
                 mvc_i = feats.new_zeros(())
 
