@@ -4,9 +4,6 @@ from torch import nn
 from cbml_benchmark.losses.registry import LOSS
 
 
-# Authors' original CBML loss (instance-to-instance), identical to the file you sent first.
-# Only the registry key and the class name were changed, so that it can live next to the
-# prototype version:   LOSSES.NAME cbml_original_loss
 @LOSS.register('cbml_original_loss')
 class CBMLOriginalLoss(nn.Module):
     def __init__(self, cfg):
