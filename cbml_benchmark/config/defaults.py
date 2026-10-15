@@ -55,6 +55,9 @@ _C.LOSSES.CBML_LOSS.MVC_RATIO = False
 _C.LOSSES.CBML_LOSS.REG_TYPE = 'mvc'    # 'mvc' | 'ratio' | 'inst_hinge'
 _C.LOSSES.CBML_LOSS.REG_ALPHA = 0.9
 _C.LOSSES.CBML_LOSS.REG_NU = 0.99
+_C.LOSSES.CBML_LOSS.NEG_MODE = 'proto'     # 'proto' | 'inst'
+_C.LOSSES.CBML_LOSS.INST_NEG_A = 1.0
+_C.LOSSES.CBML_LOSS.INST_NEG_B = 0.01
 
 # original cbml_loss
 _C.LOSSES.CBML_ORIGINAL_LOSS = CN()

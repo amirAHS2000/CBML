@@ -15,6 +15,13 @@ class CBMLLoss(nn.Module):
         'inst_hinge' : relu(hardest in-batch negative - xi), xi = alpha*EMA(pos) + (1-alpha)*EMA(hardest neg),
                        the EMAs are global buffers (no gradient)
     LOSSES.CBML_LOSS.WEIGHT multiplies the regularizer in all three cases.
+
+    LOSSES.CBML_LOSS.NEG_MODE
+        'proto' : negative term on the closest wrong-class prototype (default, as before)
+        'inst'  : hybrid. Positive term on the closest OWN-class prototype only; negative term on the hard
+                  in-batch INSTANCE negatives selected with the paper's rule, using the prototype positive as
+                  the reference (m_ik + MARGIN > s+). Prototypes then receive gradient from own-class anchors
+                  only. The instance negatives use INST_NEG_A / INST_NEG_B (paper: 1.0 / 0.01).
     """
 
     def __init__(self, cfg):
@@ -35,6 +42,13 @@ class CBMLLoss(nn.Module):
         assert self.reg_type in ('mvc', 'ratio', 'inst_hinge'), f"unknown REG_TYPE {self.reg_type}"
         self.reg_alpha = getattr(cfg.LOSSES.CBML_LOSS, 'REG_ALPHA', 0.9)
         self.reg_nu = getattr(cfg.LOSSES.CBML_LOSS, 'REG_NU', 0.99)
+
+        self.neg_mode = getattr(cfg.LOSSES.CBML_LOSS, 'NEG_MODE', 'proto')
+        assert self.neg_mode in ('proto', 'inst'), f"unknown NEG_MODE {self.neg_mode}"
+        self.inst_neg_a = getattr(cfg.LOSSES.CBML_LOSS, 'INST_NEG_A', 1.0)
+        self.inst_neg_b = getattr(cfg.LOSSES.CBML_LOSS, 'INST_NEG_B', 0.01)
+        if self.neg_mode == 'inst':
+            assert self.type in ('log', 'sqrt'), "NEG_MODE inst requires TYPE log or sqrt"
 
         self.device_name = getattr(cfg.MODEL, 'DEVICE', 'cuda')
         self.device = torch.device(self.device_name)
@@ -148,9 +162,18 @@ class CBMLLoss(nn.Module):
             reg_vals.append(reg_i.detach())
             # -------------------------------------------------------------------------
 
+            s_pos = feats[i] @ best_pos_proto
+            if self.neg_mode == 'inst':
+                # hard instance negatives (paper's rule, prototype positive as reference); no prototype gradient
+                hard_neg = neg_inst[neg_inst + self.margin > s_pos.detach()]
+                fn_inst = 1. + torch.sum(torch.exp((hard_neg - self.inst_neg_a) / self.inst_neg_b))
+
             if self.type == 'log' or self.type == 'sqrt':
-                fp = 1. + torch.exp(-1. / self.pos_b * ((feats[i] @ best_pos_proto) - self.pos_a))
-                fn = 1. + torch.exp(1. / self.neg_b * ((feats[i] @ best_neg_proto) - self.neg_a))
+                fp = 1. + torch.exp(-1. / self.pos_b * (s_pos - self.pos_a))
+                if self.neg_mode == 'inst':
+                    fn = fn_inst
+                else:
+                    fn = 1. + torch.exp(1. / self.neg_b * ((feats[i] @ best_neg_proto) - self.neg_a))
                 if self.type == 'log':
                     pos_loss = torch.log(fp)
                     neg_loss = torch.log(fn)
@@ -158,7 +181,7 @@ class CBMLLoss(nn.Module):
                     pos_loss = torch.sqrt(fp)
                     neg_loss = torch.sqrt(fn)
             else:
-                pos_loss = 1. + self.loss_weight_p * torch.exp(-1. / self.pos_b * ((feats[i] @ best_pos_proto) - self.pos_a))
+                pos_loss = 1. + self.loss_weight_p * torch.exp(-1. / self.pos_b * (s_pos - self.pos_a))
                 neg_loss = 1. + self.loss_weight_n * torch.exp(1. / self.neg_b * ((feats[i] @ best_neg_proto) - self.neg_a))
             loss.append((pos_loss + neg_loss + self.weight * reg_i))
 
