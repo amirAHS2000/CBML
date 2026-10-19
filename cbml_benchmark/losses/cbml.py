@@ -141,7 +141,7 @@ class CBMLLoss(nn.Module):
             # map back to absolute class index
             best_neg_class_idx = neg_class_indices[best_neg_class_idx_masked].item()
             best_neg_proto_idx = best_neg_proto_idx.item()
-            best_neg_proto = P_3d[best_neg_class_idx, best_neg_proto_idx]
+            best_neg_proto = P_3d[best_neg_class_idx, best_neg_proto_idx].detach()
 
             self.neg_proto_counts[best_neg_class_idx, best_neg_proto_idx] += 1
 
