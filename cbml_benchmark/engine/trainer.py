@@ -91,12 +91,7 @@ def do_train(
 
             # compute retrieval metrics (e.g., recall at k) on training set
             ret_metric_train_eval = RetMetric(feats=train_eval_feats, labels=train_eval_labels)
-            recall_curr_train_eval = []
-            recall_curr_train_eval.append(ret_metric_train_eval.recall_k(1))
-            recall_curr_train_eval.append(ret_metric_train_eval.recall_k(2))
-            recall_curr_train_eval.append(ret_metric_train_eval.recall_k(4))
-            recall_curr_train_eval.append(ret_metric_train_eval.recall_k(8))
-
+            recall_curr_train_eval = [ret_metric_train_eval.recall_k(k) for k in [1, 2, 4, 8]]
             logger.info(f'Train Recalls: {recall_curr_train_eval}')
 
             # store for plotting
