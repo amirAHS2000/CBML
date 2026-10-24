@@ -15,7 +15,7 @@ class MpcbmlLoss(nn.Module):
         self.num_classes = getattr(cfg.LOSSES.MPCBML_LOSS, 'N_CLASSES', 100)
 
         theta_is_learnable = getattr(cfg.LOSSES.MPCBML_LOSS, 'THETA_IS_LEARNABLE', False)
-        init_theta = getattr(cfg.LOSSES.MPCBML_LOSS, 'INIT_THETA', 1.0)        
+        init_theta = getattr(cfg.LOSSES.MPCBML_LOSS, 'INIT_THETA', 1.0)
         if theta_is_learnable:
             self.theta = nn.Parameter(
                 torch.tensor(init_theta, device=self.device),
@@ -32,7 +32,7 @@ class MpcbmlLoss(nn.Module):
         self.prototypes = nn.Parameter(
             torch.zeros(self.num_classes, self.prototype_per_class, self.embed_dim, device=self.device)
         )
-       
+
         # Mixture weights [C, K]
         # Be updated with Langrange Multiplier
         self.weights = nn.Parameter(
@@ -49,41 +49,28 @@ class MpcbmlLoss(nn.Module):
 
         self.hyper_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'GAMMA_REG', 0.2)
         self.reg_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'LAMBDA_REG', 0.3)
-        self.register_buffer('pos_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
-        self.register_buffer('neg_proto_counts', torch.zeros(self.num_classes, self.prototype_per_class, dtype=torch.long))
 
     @torch.no_grad()
     def set_prototypes_and_weights(self, prototypes, cluster_sizes):
         prototypes = prototypes.to(self.device)
         self.prototypes.copy_(prototypes)
-
-        # Save a frozen copy of the initial prototypes for monitoring
-        # self.initial_prototypes = prototypes
-
-        # if cluster_sizes is not None and \
-        #     cluster_sizes.shape == (self.num_classes, self.prototype_per_class):
-        #     cluster_sizes = cluster_sizes.to(self.device).float()
-        #     normalized_weights = cluster_sizes / (cluster_sizes.sum(dim=1, keepdim=True) + 1e-9)
-        #     self.weights.copy_(normalized_weights)
-        # else:
-        #     # Fallback to uniform
-        #     self.weights.fill_(1.0 / self.prototype_per_class)
         self.weights.fill_(1.0 / self.prototype_per_class)
-           
-        torch.cuda.empty_cache()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def constrained_weight_update(self):
         if self.weights.grad is None:
             return
-       
+
         # Get gradients [C, K]
         grad_w = self.weights.grad
-       
+
         # Compute mean gradient per class
         mean_grad = grad_w.mean(dim=1, keepdim=True)  # [C, 1]
-       
+
         grad_w.sub_(mean_grad)
-    
+
     def forward(self, embeddings, targets):
 
         assert embeddings.size(0) == targets.size(0), \
@@ -93,95 +80,79 @@ class MpcbmlLoss(nn.Module):
             embeddings = embeddings.to(self.device)
             targets = targets.to(self.device)
 
-        # ------------- Computing the regularization term (based on original CBML implementation) -----------------
-        sim_mat = torch.matmul(embeddings, torch.t(embeddings))
+        B = embeddings.size(0)
+        if B == 0:
+            return torch.zeros(1, requires_grad=True, device=self.device)
+
+        # ------------- Regularization term (vectorized, same logic as original CBML) -------------
         epsilon = 1e-5
-        reg_term = list()
-        for i in range(embeddings.size(0)):
-            pos_pair_ = sim_mat[i][targets == targets[i]]
-            pos_pair_ = pos_pair_[pos_pair_ < 1 - epsilon]
-            neg_pair_ = sim_mat[i][targets != targets[i]]
+        sim_mat = embeddings @ embeddings.t()                              # [B, B]
+        same = targets.unsqueeze(0) == targets.unsqueeze(1)                # [B, B]
+        pos_mask = same & (sim_mat < 1 - epsilon)                          # positives, self / duplicates removed
+        neg_mask_b = ~same                                                 # negatives
 
-            if len(neg_pair_) < 1 or len(pos_pair_) < 1:
-                continue
+        pos_cnt = pos_mask.sum(dim=1)                                      # [B]
+        neg_cnt = neg_mask_b.sum(dim=1)                                    # [B]
 
-            mean_ = self.hyper_weight * torch.mean(pos_pair_) + (1 - self.hyper_weight) * torch.mean(neg_pair_)
-            sigma_ = torch.mean(torch.sum(torch.pow(neg_pair_ - mean_, 2)))
-            reg_term.append(self.reg_weight * sigma_)
-        reg_loss = sum(reg_term) / embeddings.size(0)
-        # --------------------------------------------------------------------------------------------------------
+        pos_f = pos_mask.to(sim_mat.dtype)
+        neg_f = neg_mask_b.to(sim_mat.dtype)
 
-        z = embeddings # [B, D]
-        P = self.prototypes # [C, K, D]
-        # P = F.normalize(self.prototypes, p=2, dim=2)
-        W = self.weights # [C, K]
-        B = z.shape[0] # batch size
+        pos_mean = (sim_mat * pos_f).sum(dim=1) / pos_cnt.clamp(min=1)
+        neg_mean = (sim_mat * neg_f).sum(dim=1) / neg_cnt.clamp(min=1)
+        mean_ = self.hyper_weight * pos_mean + (1 - self.hyper_weight) * neg_mean   # [B]
+
+        sigma_ = (((sim_mat - mean_.unsqueeze(1)) ** 2) * neg_f).sum(dim=1)         # [B]
+        valid = ((pos_cnt > 0) & (neg_cnt > 0)).to(sim_mat.dtype)                   # skip rows like the original `continue`
+        reg_loss = (self.reg_weight * sigma_ * valid).sum() / B
+        # -------------------------------------------------------------------------------------------
+
+        z = embeddings                       # [B, D]
+        P = self.prototypes                  # [C, K, D]
+        W = self.weights                     # [C, K]
         C = self.num_classes
         K = self.prototype_per_class
         beta = torch.exp(self.theta)
-        eps = 1e-9
 
-        # Compute all similarities [B, C, K]
-        flat_protos = P.view(C * K, -1) # [C * K, D]
-        # Calculate Euclidean distance [B, C * K]
-        logits = z @ flat_protos.T - 0.5 * (flat_protos.norm(p=2, dim=1) ** 2) # [B, C * K]
+        # logits [B, C, K]
+        flat_protos = P.view(C * K, -1)
+        logits = z @ flat_protos.T - 0.5 * (flat_protos.norm(p=2, dim=1) ** 2)
         logits = logits.view(B, C, K)
 
-        batch_loss = []
+        log_W = torch.log(W)                          # [C, K]
+        log_priors = torch.log(self.class_priors)     # [C]
+        arange_B = torch.arange(B, device=logits.device)
 
-        for i in range(B):
-            
-            target_class = targets[i].item()
-            pos_weights = W[target_class] # [K]
-            pos_priors = self.class_priors[target_class] # [1]
-            pos_score = torch.log(pos_weights) + logits[i, target_class, :]
+        # ---------------- positive selection ----------------
+        pos_logits = logits[arange_B, targets]                        # [B, K]
+        pos_score = log_W[targets] + pos_logits                       # [B, K]
+        best_pos_idx = torch.argmax(pos_score, dim=1)                 # [B]
+        best_pos_logit = pos_logits[arange_B, best_pos_idx]           # [B]
+        best_pos_logW = log_W[targets, best_pos_idx]                  # [B]
+        pos_log_prior = log_priors[targets]                           # [B]
 
-            best_pos_proto_idx = torch.argmax(pos_score).item()
-            best_pos_proto = P[target_class, best_pos_proto_idx]
-            best_pos_weight = W[target_class, best_pos_proto_idx]
+        # ---------------- negative selection ----------------
+        neg_score = log_priors.view(1, C, 1) + log_W.unsqueeze(0) + logits   # [B, C, K]
+        class_ids = torch.arange(C, device=logits.device).unsqueeze(0)       # [1, C]
+        target_mask = (class_ids == targets.unsqueeze(1)).unsqueeze(2)       # [B, C, 1]
+        neg_score = neg_score.masked_fill(target_mask, float('-inf'))
 
-            self.pos_proto_counts[target_class, best_pos_proto_idx] += 1
+        flat_max_idx = torch.argmax(neg_score.view(B, C * K), dim=1)         # [B]
+        best_neg_class = flat_max_idx // K                                    # [B]
+        best_neg_proto = flat_max_idx % K                                     # [B]
 
-            # negative selection
-            neg_mask = torch.arange(C, device=self.device) != target_class
-            neg_class_indices = torch.where(neg_mask)[0] # absolute class indices
+        best_neg_logit = logits[arange_B, best_neg_class, best_neg_proto]    # [B]
+        best_neg_logW = log_W[best_neg_class, best_neg_proto]                # [B]
+        neg_log_prior = log_priors[best_neg_class]                           # [B]
 
-            neg_weights = W[neg_mask] # [C - 1, K]
-            neg_priors = self.class_priors[neg_mask] # [C - 1]
-            neg_score = torch.log(neg_priors.unsqueeze(1)) + torch.log(neg_weights) + logits[i, neg_mask, :]
+        # ---------------- loss ----------------
+        # logit_neg - logit_pos == z.pn - 0.5|pn|^2 - z.pp + 0.5|pp|^2
+        current_loss = F.softplus(
+            (neg_log_prior - pos_log_prior) +
+            (best_neg_logW - best_pos_logW) +
+            beta * (best_neg_logit - best_pos_logit)
+        )
 
-            flat_max_idx = torch.argmax(neg_score)
-            best_neg_class_idx_masked = flat_max_idx // K
-            best_neg_proto_idx = flat_max_idx % K
-            
-            # map back to absolute class index
-            best_neg_class_idx = neg_class_indices[best_neg_class_idx_masked].item()
-            best_neg_proto_idx = best_neg_proto_idx.item()
-
-            best_neg_proto = P[best_neg_class_idx, best_neg_proto_idx]
-            best_neg_weight = W[best_neg_class_idx, best_neg_proto_idx]
-            best_neg_class_prior = self.class_priors[best_neg_class_idx]
-
-            self.neg_proto_counts[best_neg_class_idx, best_neg_proto_idx] += 1
-
-            current_loss = F.softplus(
-                (torch.log(best_neg_class_prior) - torch.log(pos_priors)) +
-                (torch.log(best_neg_weight) - torch.log(best_pos_weight)) +
-                (beta * ((embeddings[i] @ best_neg_proto) -
-                         ((1/2) * (best_neg_proto @ best_neg_proto)) -
-                         (embeddings[i] @ best_pos_proto) +
-                         ((1/2) * (best_pos_proto @ best_pos_proto))
-                         ))
-            )
-
-            batch_loss.append(current_loss)
-
-
-        if len(batch_loss) == 0:
-            return torch.zeros(1, requires_grad=True).cuda()
-        
-        main_loss = sum(batch_loss) / B
+        main_loss = current_loss.sum() / B
         loss = main_loss + reg_loss
-        # loss = sum(batch_loss) / B
 
         return loss
