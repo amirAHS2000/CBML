@@ -5,6 +5,7 @@ from .lr_scheduler import WarmupMultiStepLR
 def build_optimizer(cfg, model, criterion=None, loss_param=None):
     base_lr = getattr(cfg.SOLVER, 'BASE_LR', 0.0001)
 
+
     # ---------- ADAM for model ----------
     model_params = []
     for key, value in model.named_parameters():
@@ -69,15 +70,15 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
     else:
         optimizer_loss = None
 
-    # for i, g in enumerate(optimizer_main.param_groups):
-    #     print(
-    #         f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
-    #     )
+    for i, g in enumerate(optimizer_main.param_groups):
+        print(
+            f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
+        )
     
-    # for i, g in enumerate(optimizer_loss.param_groups):
-    #     print(
-    #         f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
-    #     )
+    for i, g in enumerate(optimizer_loss.param_groups):
+        print(
+            f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
+        )
 
     return optimizer_main, optimizer_loss
 
