@@ -1,6 +1,8 @@
 MODEL:
   BACKBONE:
     NAME: resnet18
+  HEAD:
+    DIM: 64
   PRETRAIN: output-resnet18-cub-mpcbml/best_model.pth
 
 SAVE_DIR: output-resnet18-cub-mpcbml
