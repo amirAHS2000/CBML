@@ -4,24 +4,31 @@ from .lr_scheduler import WarmupMultiStepLR
 
 def build_optimizer(cfg, model, criterion=None, loss_param=None):
     base_lr = getattr(cfg.SOLVER, 'BASE_LR', 0.0001)
-    backbone_lr_mult = getattr(cfg.SOLVER, 'BACKBONE_LR_MULT', 0.2)
-    head_lr_mult = getattr(cfg.SOLVER, 'HEAD_LR_MULT', 1.0)
-
 
     # ---------- ADAM for model ----------
     model_params = []
-    lr_mul = 1.0
     for key, value in model.named_parameters():
         if not value.requires_grad:
             continue
-        if "backbone" in key:
-            lr_mul = 0.1
-        model_params += [{"params": [value], "lr_mul": lr_mul}]
+        if key.startswith('backbone.'):
+            lr_mul = 0.2
+            weight_decay = cfg.SOLVER.WEIGHT_DECAY
+        elif key.startswith('headembedding.'):
+            lr_mul = 1.0
+            weight_decay = cfg.SOLVER.WEIGHT_DECAY
+        else:
+            lr_mul = 1.0
+            weight_decay = 0.0
 
+        model_params.append({
+            'params': [value],
+            'lr': base_lr * lr_mul,
+            'weight_decay': weight_decay
+        })
+
+    # Main optimizer (Adam) only for model
     optimizer_main = getattr(torch.optim, cfg.SOLVER.OPTIMIZER_NAME)(
-        model_params,
-        lr=base_lr,
-        weight_decay=cfg.SOLVER.WEIGHT_DECAY
+        model_params
     )
 
     # ---------- SGD for loss parameters ----------
@@ -35,18 +42,6 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
                 'params': [criterion.prototypes],
                 'lr': base_lr * 1000.0,         # as before, high LR
                 'momentum': 0.9,              # pure SGD, no momentum
-                'weight_decay': 0.0
-            })
-        # Negative prototypes (dedicated, decoupled from Prototypes above --
-        # see mpcbml_loss.py). Defaults to the same LR/momentum as
-        # Prototypes since they're the same kind of object; override with
-        # cfg.SOLVER.NEG_PROTOTYPE_LR if they need independent tuning.
-        if hasattr(criterion, 'neg_prototypes') and criterion.neg_prototypes.requires_grad:
-            neg_proto_lr = getattr(cfg.SOLVER, 'NEG_PROTOTYPE_LR', base_lr * 1000.0)
-            loss_params.append({
-                'params': [criterion.neg_prototypes],
-                'lr': neg_proto_lr,
-                'momentum': 0.9,
                 'weight_decay': 0.0
             })
         # Theta
@@ -74,18 +69,15 @@ def build_optimizer(cfg, model, criterion=None, loss_param=None):
     else:
         optimizer_loss = None
 
-    for i, g in enumerate(optimizer_main.param_groups):
-        print(
-            f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
-        )
-
-    if optimizer_loss is not None:
-        for i, g in enumerate(optimizer_loss.param_groups):
-            print(
-                f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
-            )
-    else:
-        print("optimizer_loss: None (criterion has no learnable parameters)")
+    # for i, g in enumerate(optimizer_main.param_groups):
+    #     print(
+    #         f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
+    #     )
+    
+    # for i, g in enumerate(optimizer_loss.param_groups):
+    #     print(
+    #         f"group {i}: lr={g['lr']}, weight_decay={g.get('weight_decay', 'default')}"
+    #     )
 
     return optimizer_main, optimizer_loss
 
@@ -111,4 +103,3 @@ def build_lr_scheduler(cfg, optimizer_main, optimizer_loss=None):
         )
     
     return scheduler_main, scheduler_loss
-

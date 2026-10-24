@@ -1,6 +1,9 @@
 import gc
-import json
+import os
+import random
 import argparse
+
+import numpy as np
 import torch
 
 from cbml_benchmark.config import cfg
@@ -16,7 +19,6 @@ from cbml_benchmark.utils.prototype_initializer import (
     initialize_prototypes_mean,
     initialize_prototypes_kmeans,
 )
-from cbml_benchmark.utils.reproducibility import seed_everything
 from cbml_benchmark.utils.cache_prototypes import (
     _get_prototype_cache_path,
     load_cached_prototypes,
@@ -24,11 +26,45 @@ from cbml_benchmark.utils.cache_prototypes import (
 )
 
 
+# The prototype cache is keyed by the config, not by the seed / head weights, so with
+# several seeds a later run could silently load k-means prototypes that were computed
+# from ANOTHER run's random head.  It is therefore disabled (k-means takes seconds).
+USE_PROTOTYPE_CACHE = False
+
+
+def set_seed(seed, deterministic=False):
+    """Seed python, numpy and torch (CPU + all GPUs).
+
+    This fixes: the random head initialisation, the RandomIdentitySampler stream
+    (it uses python `random` / `np.random` in the main process) and the
+    augmentation streams of the DataLoader workers (derived from the torch seed).
+    It does NOT make GPU training bit-identical unless `deterministic=True`
+    (slower; some ops may be unavailable) -- with it off, expect tiny run-to-run
+    differences that are far smaller than the seed-to-seed variance.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
+
+
 def train(cfg):
-    seed_everything(cfg.SOLVER.RNG_SEED, deterministic=cfg.SOLVER.DETERMINISTIC)
     logger = setup_logger(name='Train', level=cfg.LOGGER.LEVEL)
+
+    seed = int(cfg.SOLVER.RNG_SEED)
+    deterministic = bool(cfg['SOLVER']['DETERMINISTIC']) if 'DETERMINISTIC' in cfg.SOLVER else False
+    set_seed(seed, deterministic)
+    os.makedirs(cfg.SAVE_DIR, exist_ok=True)
+    with open(os.path.join(cfg.SAVE_DIR, 'config_resolved.yaml'), 'w') as f:
+        f.write(cfg.dump())                       # exact config of this run (provenance)
+    logger.info(f"seed = {seed}, deterministic = {deterministic}, SAVE_DIR = {cfg.SAVE_DIR}")
     logger.info(cfg)
-    logger.info(f'Reproducibility | seed={cfg.SOLVER.RNG_SEED} | deterministic={cfg.SOLVER.DETERMINISTIC}')
+
     model = build_model(cfg)
     device = torch.device(cfg.MODEL.DEVICE)
     model.to(device)
@@ -40,7 +76,10 @@ def train(cfg):
 
     # initializing prototypes if using mpcbml loss
     if cfg.LOSSES.NAME == 'mpcbml_loss':
-        cached_prototypes, cached_cluster_sizes, cache_path = load_cached_prototypes(cfg)
+        if USE_PROTOTYPE_CACHE:
+            cached_prototypes, cached_cluster_sizes, cache_path = load_cached_prototypes(cfg)
+        else:
+            cached_prototypes, cached_cluster_sizes, cache_path = None, None, None
 
         if cached_prototypes is not None:
             logger.info(f"Loaded cached prototypes from {cache_path}, skipping recomputation.")
@@ -50,7 +89,7 @@ def train(cfg):
             logger.info(f"No cache found. Initializing prototypes using {cfg.LOSSES.MPCBML_LOSS.INIT_METHOD}...")
 
             if cfg.LOSSES.MPCBML_LOSS.INIT_METHOD == 'kmeans':
-                prototypes, cluster_sizes = initialize_prototypes_kmeans(model=model, cfg=cfg)
+                prototypes, cluster_sizes = initialize_prototypes_kmeans(model=model, cfg=cfg, seed=seed)
             elif cfg.LOSSES.MPCBML_LOSS.INIT_METHOD == 'mean':
                 prototypes = initialize_prototypes_mean(model=model, cfg=cfg)
                 cluster_sizes = None
@@ -65,9 +104,10 @@ def train(cfg):
             else:
                 raise ValueError(f"Unknown initializing method: {cfg.LOSSES.MPCBML_LOSS.INIT_METHOD}")
 
-            _, key_dict = _get_prototype_cache_path(cfg)
-            save_prototype_cache(cache_path, key_dict, prototypes, cluster_sizes)
-            logger.info(f"Saved prototype cache to {cache_path}")
+            if USE_PROTOTYPE_CACHE:
+                _, key_dict = _get_prototype_cache_path(cfg)
+                save_prototype_cache(cache_path, key_dict, prototypes, cluster_sizes)
+                logger.info(f"Saved prototype cache to {cache_path}")
 
         criterion.set_prototypes_and_weights(prototypes, cluster_sizes)
         del prototypes
@@ -109,7 +149,6 @@ def train(cfg):
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD
     checkpointer = Checkpointer(model, optimizer_main, scheduler_main, cfg.SAVE_DIR)
 
-    # Change this and optimizer files (in solver folder) + trainer arguments
     do_train(
         cfg,
         model,
@@ -147,8 +186,11 @@ def test(cfg):
 
 def parse_args():
     """
-  Parse input arguments
-  """
+    Parse input arguments.  Any config key can be overridden from the command
+    line after the known flags, e.g.
+        python3 tools/main.py --cfg configs/x.yaml --phase train \
+            SOLVER.RNG_SEED 2 SAVE_DIR output/seed2
+    """
     parser = argparse.ArgumentParser(description='Train a retrieval network')
     parser.add_argument(
         '--cfg',
@@ -162,21 +204,19 @@ def parse_args():
         help='train or test',
         default='train',
         type=str)
+    parser.add_argument(
+        'opts',
+        help='Modify config options from the command line (KEY VALUE pairs)',
+        default=None,
+        nargs=argparse.REMAINDER)
     return parser.parse_args()
 
 
 if __name__ == '__main__':
     args = parse_args()
     cfg.merge_from_file(args.cfg_file)
-
-    if cfg.LOSSES.NAME == 'mpcbml_loss':
-        with open(cfg.DATA.CLASS_COUNT_SOURCE, 'r') as fp:
-            class_counts = json.load(fp)
-        total = sum(class_counts.values())
-        # assuming classes are stored as string keys "0", "1", ..., ensure correct order:
-        priors = [class_counts.get(str(i), 0) / total for i in range(cfg.LOSSES.MPCBML_LOSS.N_CLASSES)]
-        cfg.LOSSES.MPCBML_LOSS.CLASS_PRIORS = priors
-
+    if args.opts:
+        cfg.merge_from_list(args.opts)
     if args.train_test == 'train':
         train(cfg)
     else:
