@@ -42,7 +42,7 @@ def do_train(
     best_recall = 0
 
     # store recalls for plotting
-    train_recalls_over_iters = []
+    # train_recalls_over_iters = []
     val_recalls_over_iters = []
     iters = []
 
@@ -85,18 +85,18 @@ def do_train(
                 logger.info(f'Recall@1 at iteration {iteration:06d}: recall@1: {recall_curr[0]:.3f}')
 
             # compute recalls for training set (entire training set)
-            train_eval_labels = eval_train_loader.dataset.label_list
-            train_eval_labels = np.array([int(k) for k in train_eval_labels])
-            train_eval_feats = feat_extractor(model, eval_train_loader, logger=logger)
+            # train_eval_labels = eval_train_loader.dataset.label_list
+            # train_eval_labels = np.array([int(k) for k in train_eval_labels])
+            # train_eval_feats = feat_extractor(model, eval_train_loader, logger=logger)
 
-            # compute retrieval metrics (e.g., recall at k) on training set
-            ret_metric_train_eval = RetMetric(feats=train_eval_feats, labels=train_eval_labels)
-            recall_curr_train_eval = [ret_metric_train_eval.recall_k(k) for k in [1, 2, 4, 8]]
-            logger.info(f'Train Recalls: {recall_curr_train_eval}')
+            # # compute retrieval metrics (e.g., recall at k) on training set
+            # ret_metric_train_eval = RetMetric(feats=train_eval_feats, labels=train_eval_labels)
+            # recall_curr_train_eval = [ret_metric_train_eval.recall_k(k) for k in [1, 2, 4, 8]]
+            # logger.info(f'Train Recalls: {recall_curr_train_eval}')
 
             # store for plotting
             iters.append(iteration)
-            train_recalls_over_iters.append(recall_curr_train_eval)
+            # train_recalls_over_iters.append(recall_curr_train_eval)
             val_recalls_over_iters.append(recall_curr)
 
         # ====================================================================
@@ -193,16 +193,16 @@ def do_train(
     # ====================================================================
     # POST-TRAINING: PLOTTING
     # ====================================================================
-    for i, k in enumerate([1, 2, 4, 8]):
-        plt.figure()
-        plt.plot(iters, [r[i] for r in train_recalls_over_iters], label=f'Train R@{k}')
-        plt.plot(iters, [r[i] for r in val_recalls_over_iters], label=f'Val R@{k}')
-        plt.xlabel('Iteration')
-        plt.ylabel(f'Recall@{k}')
-        plt.legend()
-        plt.title(f'Recall@K over Iterations (k={k})')
-        plt.savefig(os.path.join(cfg.SAVE_DIR, f'recall_at_{k}_iter_{iteration}.png'))
-        plt.close()  # Close to free memory
+    # for i, k in enumerate([1, 2, 4, 8]):
+    #     plt.figure()
+    #     plt.plot(iters, [r[i] for r in train_recalls_over_iters], label=f'Train R@{k}')
+    #     plt.plot(iters, [r[i] for r in val_recalls_over_iters], label=f'Val R@{k}')
+    #     plt.xlabel('Iteration')
+    #     plt.ylabel(f'Recall@{k}')
+    #     plt.legend()
+    #     plt.title(f'Recall@K over Iterations (k={k})')
+    #     plt.savefig(os.path.join(cfg.SAVE_DIR, f'recall_at_{k}_iter_{iteration}.png'))
+    #     plt.close()  # Close to free memory
 
     # ====================================================================    
 
