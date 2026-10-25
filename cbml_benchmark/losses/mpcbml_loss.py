@@ -47,8 +47,8 @@ class MpcbmlLoss(nn.Module):
             torch.tensor(priors_list, device=self.device)
         )
 
-        self.hyper_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'GAMMA_REG', 0.2)
-        self.reg_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'LAMBDA_REG', 0.3)
+        # self.hyper_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'GAMMA_REG', 0.2)
+        # self.reg_weight = getattr(cfg.LOSSES.MPCBML_LOSS, 'LAMBDA_REG', 0.3)
 
     @torch.no_grad()
     def set_prototypes_and_weights(self, prototypes, cluster_sizes):
@@ -85,25 +85,25 @@ class MpcbmlLoss(nn.Module):
             return torch.zeros(1, requires_grad=True, device=self.device)
 
         # ------------- Regularization term (vectorized, same logic as original CBML) -------------
-        epsilon = 1e-5
-        sim_mat = embeddings @ embeddings.t()                              # [B, B]
-        same = targets.unsqueeze(0) == targets.unsqueeze(1)                # [B, B]
-        pos_mask = same & (sim_mat < 1 - epsilon)                          # positives, self / duplicates removed
-        neg_mask_b = ~same                                                 # negatives
+        # epsilon = 1e-5
+        # sim_mat = embeddings @ embeddings.t()                              # [B, B]
+        # same = targets.unsqueeze(0) == targets.unsqueeze(1)                # [B, B]
+        # pos_mask = same & (sim_mat < 1 - epsilon)                          # positives, self / duplicates removed
+        # neg_mask_b = ~same                                                 # negatives
 
-        pos_cnt = pos_mask.sum(dim=1)                                      # [B]
-        neg_cnt = neg_mask_b.sum(dim=1)                                    # [B]
+        # pos_cnt = pos_mask.sum(dim=1)                                      # [B]
+        # neg_cnt = neg_mask_b.sum(dim=1)                                    # [B]
 
-        pos_f = pos_mask.to(sim_mat.dtype)
-        neg_f = neg_mask_b.to(sim_mat.dtype)
+        # pos_f = pos_mask.to(sim_mat.dtype)
+        # neg_f = neg_mask_b.to(sim_mat.dtype)
 
-        pos_mean = (sim_mat * pos_f).sum(dim=1) / pos_cnt.clamp(min=1)
-        neg_mean = (sim_mat * neg_f).sum(dim=1) / neg_cnt.clamp(min=1)
-        mean_ = self.hyper_weight * pos_mean + (1 - self.hyper_weight) * neg_mean   # [B]
+        # pos_mean = (sim_mat * pos_f).sum(dim=1) / pos_cnt.clamp(min=1)
+        # neg_mean = (sim_mat * neg_f).sum(dim=1) / neg_cnt.clamp(min=1)
+        # mean_ = self.hyper_weight * pos_mean + (1 - self.hyper_weight) * neg_mean   # [B]
 
-        sigma_ = (((sim_mat - mean_.unsqueeze(1)) ** 2) * neg_f).sum(dim=1)         # [B]
-        valid = ((pos_cnt > 0) & (neg_cnt > 0)).to(sim_mat.dtype)                   # skip rows like the original `continue`
-        reg_loss = (self.reg_weight * sigma_ * valid).sum() / B
+        # sigma_ = (((sim_mat - mean_.unsqueeze(1)) ** 2) * neg_f).sum(dim=1)         # [B]
+        # valid = ((pos_cnt > 0) & (neg_cnt > 0)).to(sim_mat.dtype)                   # skip rows like the original `continue`
+        # reg_loss = (self.reg_weight * sigma_ * valid).sum() / B
         # -------------------------------------------------------------------------------------------
 
         z = embeddings                       # [B, D]
@@ -153,6 +153,6 @@ class MpcbmlLoss(nn.Module):
         )
 
         main_loss = current_loss.sum() / B
-        loss = main_loss + reg_loss
+        # loss = main_loss + reg_loss
 
-        return loss
+        return main_loss
