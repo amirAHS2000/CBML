@@ -9,6 +9,7 @@ from cbml_benchmark.data.evaluations import RetMetric
 from cbml_benchmark.utils.feat_extractor import feat_extractor
 from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
+from cbml_benchmark.utils.nmi_calculator import compute_nmi
 
 
 def do_train(
@@ -71,6 +72,10 @@ def do_train(
             recall_curr.append(ret_metric.recall_k(2))
             recall_curr.append(ret_metric.recall_k(4))
             recall_curr.append(ret_metric.recall_k(8))
+
+            if iteration == 4800:
+                nmi = compute_nmi(feats, labels)
+                logger.info(f'Val NMI: {nmi:.4f}')
 
             # Log current recall metrics.
             logger.info(f'Val Recalls: {recall_curr}')
