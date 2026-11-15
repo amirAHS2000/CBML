@@ -39,7 +39,7 @@ class ProxyCBMLLoss(nn.Module):
         neg_flat = neg_scores.reshape(b, c * k).argmax(dim=1)
         return pos_k, neg_flat // k, neg_flat % k
 
-    def loss_components(self, feats, labels):
+    def loss_components(self, feats, labels, return_details=False):
         """Return the two mean NLL terms separately for tests/diagnostics."""
         labels = labels.long().reshape(-1)
         if feats.ndim != 2 or feats.shape[1] != self.dim or feats.shape[0] == 0:
@@ -59,6 +59,12 @@ class ProxyCBMLLoss(nn.Module):
         s_neg = (x * p_neg).sum(dim=-1)
         loss_pos = F.softplus((self.pos_a - s_pos) / self.pos_b).mean()
         loss_neg = F.softplus((s_neg - self.neg_a) / self.neg_b).mean()
+        if return_details:
+            return loss_pos, loss_neg, {
+                "s_pos": s_pos.detach(), "s_neg": s_neg.detach(),
+                "labels": labels.detach(), "pos_k": pos_k,
+                "neg_c": neg_c, "neg_k": neg_k,
+            }
         return loss_pos, loss_neg
 
     def forward(self, feats, labels):

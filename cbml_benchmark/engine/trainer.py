@@ -9,155 +9,198 @@ from cbml_benchmark.data.evaluations import RetMetric
 from cbml_benchmark.utils.feat_extractor import feat_extractor
 from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
+from cbml_benchmark.utils.training_diagnostics import (
+    gradient_norms, preserve_rng, recall_from_matrix, sampled_proxy_stats, sync,
+)
 
-def update_ema_variables(model,ema_model):
+
+def update_ema_variables(model, ema_model):
     alpha = 0.999
     for ema_param, param in zip(ema_model.parameters(), model.parameters()):
         ema_param.data.mul_(alpha).add_(1-alpha,param.data)
 
+
+def evaluate_recall(model, loader, logger, iteration=0, split='validation',
+                    diagnostics=None, fast=False, criterion=None):
+    """Preserve the released CBML retrieval definition and similarity matrix."""
+    start = time.perf_counter()
+    model.eval()
+    labels = np.array([int(k) for k in loader.dataset.label_list])
+    feats = feat_extractor(model, loader, logger=logger)
+    extraction = time.perf_counter()-start
+    t = time.perf_counter()
+    metric = RetMetric(feats=feats, labels=labels)
+    similarity = time.perf_counter()-t
+    t = time.perf_counter()
+    if fast:
+        recalls = recall_from_matrix(metric.sim_mat, labels)
+    else:
+        recalls = [metric.recall_k(k) for k in (1, 2, 4, 8)]
+    ranking = time.perf_counter()-t
+    if diagnostics:
+        diagnostics.record_recall(iteration, split, len(labels), recalls,
+                                  extraction, similarity, ranking, time.perf_counter()-start)
+    logger.info('%s iteration %d recall@1/2/4/8: %s', split, iteration, recalls)
+    del metric  # release the full similarity matrix before proxy diagnostics
+    if diagnostics and criterion is not None and split == 'train':
+        diagnostics.proxy_snapshot(iteration, feats, labels, criterion)
+    return recalls
+
+
 def do_train(
-        cfg,
-        model,
-        train_loader,
-        val_loader,
-        optimizer,
-        scheduler,
-        criterion,
-        criterion_aux,
-        checkpointer,
-        device,
-        checkpoint_period,
-        arguments,
-        logger,
-        proxy_optimizer=None,
+        cfg, model, train_loader, val_loader, optimizer, scheduler,
+        criterion, criterion_aux, checkpointer, device, checkpoint_period,
+        arguments, logger, proxy_optimizer=None, diagnostics=None,
+        train_eval_loader=None,
 ):
-    logger.info("Start training")
-    meters = MetricLogger(delimiter="  ")
+    logger.info('Start training')
+    meters = MetricLogger(delimiter='  ')
     max_iter = len(train_loader)
+    start_iter = arguments['iteration']
+    best_iteration = arguments.get('best_iteration', -1)
+    best_recall = arguments.get('best_recall', 0)
+    start_training_time = time.perf_counter()
+    fast = bool(diagnostics and diagnostics.cfg.FAST_RECALL)
+    is_proxy = hasattr(criterion, 'proxies') and hasattr(criterion, 'loss_components')
 
-    start_iter = arguments["iteration"]
-    best_iteration = arguments.get("best_iteration", -1)
-    best_recall = arguments.get("best_recall", 0)
+    def save(name, iteration):
+        start = time.perf_counter()
+        checkpointer.save(name, **arguments)
+        if diagnostics:
+            diagnostics.event('checkpoint', iteration=iteration, name=name,
+                              total_s=time.perf_counter()-start)
 
-    start_training_time = time.time()
-    end = time.time()
-    for iteration, (images, targets) in enumerate(itertools.islice(train_loader, max(0, max_iter - start_iter)), start_iter):
-
+    end = time.perf_counter()
+    for iteration, (images, targets) in enumerate(
+            itertools.islice(train_loader, max(0, max_iter-start_iter)), start_iter):
+        data_wait = time.perf_counter()-end
+        # The original validation schedule evaluates the model BEFORE the update.
         if iteration % cfg.VALIDATION.VERBOSE == 0 or iteration == max_iter:
-            model.eval()
             logger.info('Validation')
-            labels = val_loader.dataset.label_list
-            labels = np.array([int(k) for k in labels])
-            feats = feat_extractor(model, val_loader, logger=logger)
-
-            ret_metric = RetMetric(feats=feats, labels=labels)
-            recall_curr = []
-            recall_curr.append(ret_metric.recall_k(1))
-            recall_curr.append(ret_metric.recall_k(2))
-            recall_curr.append(ret_metric.recall_k(4))
-            recall_curr.append(ret_metric.recall_k(8))
-
+            recall_curr = evaluate_recall(model, val_loader, logger, iteration,
+                                          diagnostics=diagnostics, fast=fast)
             print(recall_curr)
-
             if recall_curr[0] > best_recall:
-                best_recall = recall_curr[0]
-                best_iteration = iteration
-                logger.info(f'Best iteration {iteration}: recall@1: {recall_curr[0]:.3f}')
+                best_recall, best_iteration = recall_curr[0], iteration
                 arguments.update(best_iteration=best_iteration, best_recall=best_recall)
-                checkpointer.save("best_model", **arguments)
+                logger.info('Best iteration %d: recall@1: %.3f', iteration, best_recall)
+                save('best_model', iteration)
             else:
-                logger.info(f'Recall@1 at iteration {iteration:06d}: recall@1: {recall_curr[0]:.3f}')
+                logger.info('Recall@1 at iteration %06d: recall@1: %.3f', iteration, recall_curr[0])
+        # Extra train evaluation has its own RNG scope; no sampling or gradients.
+        if diagnostics and train_eval_loader is not None and iteration % diagnostics.cfg.TRAIN_RECALL_EVERY == 0:
+            with preserve_rng(device):
+                evaluate_recall(model, train_eval_loader, logger, iteration, 'train',
+                                diagnostics, fast=fast, criterion=criterion if is_proxy else None)
 
         model.train()
         model.apply(set_bn_eval)
+        iteration += 1
+        arguments['iteration'] = iteration
+        profile = bool(diagnostics and (iteration == 1 or iteration % diagnostics.cfg.STATS_EVERY == 0))
+        stages = {}
+        if profile:
+            sync(device)
+        step_start = last = time.perf_counter()
 
-        data_time = time.time() - end
-        iteration = iteration + 1
-        arguments["iteration"] = iteration
+        def mark(name):
+            nonlocal last
+            if profile:
+                sync(device)
+                now = time.perf_counter()
+                stages[name] = now-last
+                last = now
 
-        scheduler.step()
-
+        scheduler.step()  # preserve released ordering for fair comparison
         images = images.to(device)
-        targets = torch.stack([target.to(device) for target in targets])
-
+        targets = targets.to(device)  # collate_fn already returns a contiguous int64 tensor
+        mark('transfer_and_scheduler_s')
         feats = model(images)
+        mark('forward_s')
+        details = None
+        loss_pos = loss_neg = None
         if criterion_aux is not None:
             if cfg.LOSSES.NAME_AUX != 'adv_loss':
                 loss = criterion(feats, targets)
                 loss_aux = criterion_aux(feats, targets)
-                loss = (1-cfg.LOSSES.AUX_WEIGHT)*loss + cfg.LOSSES.AUX_WEIGHT*loss_aux
             else:
                 loss = criterion(feats, targets)
-                feats=torch.split(feats,cfg.LOSSES.ADV_LOSS.CLASS_DIM,dim=1)
-                loss_aux = criterion_aux(feats[0], feats[1])
-                loss = (1-cfg.LOSSES.AUX_WEIGHT)*loss + cfg.LOSSES.AUX_WEIGHT * loss_aux
+                split_feats = torch.split(feats, cfg.LOSSES.ADV_LOSS.CLASS_DIM, dim=1)
+                loss_aux = criterion_aux(split_feats[0], split_feats[1])
+            loss = (1-cfg.LOSSES.AUX_WEIGHT)*loss + cfg.LOSSES.AUX_WEIGHT*loss_aux
+        elif diagnostics and is_proxy:
+            if profile:
+                loss_pos, loss_neg, details = criterion.loss_components(feats, targets, return_details=True)
+            else:
+                loss_pos, loss_neg = criterion.loss_components(feats, targets)
+            loss = loss_pos + loss_neg
         else:
             loss = criterion(feats, targets)
+        mark('loss_s')
         optimizer.zero_grad()
         if proxy_optimizer is not None:
             proxy_optimizer.zero_grad()
         loss.backward()
+        mark('backward_s')
+
+        extra = {}
+        if profile:
+            extra.update(gradient_norms(model))
+            if details is not None:
+                extra.update(sampled_proxy_stats(details, criterion))
+                before = criterion.proxies.detach().clone()
+            mark('pre_update_diagnostics_s')
         optimizer.step()
         if proxy_optimizer is not None:
             proxy_optimizer.step()
-
-        batch_time = time.time() - end
-        end = time.time()
-        meters.update(time=batch_time, data=data_time, loss=loss.item())
-
-        eta_seconds = meters.time.global_avg * (max_iter - iteration)
-        eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
-
+        mark('optimizer_s')
+        if profile and details is not None:
+            with torch.no_grad():
+                delta = criterion.proxies.detach()-before
+                extra['proxy_update_norm'] = float(delta.norm())
+                assigned = torch.zeros(criterion.num_classes*criterion.k, dtype=torch.bool, device=device)
+                assigned[details['labels']*criterion.k+details['pos_k']] = True
+                extra['unassigned_proxy_update_norm'] = float(delta.reshape(-1, criterion.dim)[~assigned].norm())
+            mark('post_update_diagnostics_s')
+        if loss_pos is not None:
+            loss_val, pos_val, neg_val = torch.stack([loss.detach(), loss_pos.detach(), loss_neg.detach()]).cpu().tolist()
+        else:
+            loss_val, pos_val, neg_val = loss.item(), None, None
+        step_s = time.perf_counter()-step_start
+        meters.update(time=step_s+data_wait, data=data_wait, loss=loss_val)
+        if diagnostics:
+            diagnostics.step(iteration=iteration, loss=loss_val, loss_pos=pos_val, loss_neg=neg_val,
+                             batch_size=len(images), data_wait_s=data_wait, step_wall_s=step_s,
+                             network_lr=optimizer.param_groups[0]['lr'],
+                             proxy_lr=proxy_optimizer.param_groups[0]['lr'] if proxy_optimizer else None,
+                             profiled=profile, cuda_peak_bytes=torch.cuda.max_memory_allocated(device) if device.type=='cuda' else None,
+                             **stages, **extra)
+        eta_seconds = meters.time.global_avg*(max_iter-iteration)
         if iteration % 20 == 0 or iteration == max_iter:
-            logger.info(
-                meters.delimiter.join(
-                    [
-                        "eta: {eta}",
-                        "iter: {iter}",
-                        "{meters}",
-                        "lr: {lr:.6f}",
-                        "max mem: {memory:.1f} GB",
-                    ]
-                ).format(
-                    eta=eta_string,
-                    iter=iteration,
-                    meters=str(meters),
-                    lr=optimizer.param_groups[0]["lr"],
-                    memory=torch.cuda.max_memory_allocated() / 1024.0 / 1024.0 / 1024.0,
-                )
-            )
+            logger.info('eta (training only): %s  iter: %d  %s  lr: %.6f  max mem: %.1f GB',
+                        datetime.timedelta(seconds=int(eta_seconds)), iteration, meters,
+                        optimizer.param_groups[0]['lr'],
+                        torch.cuda.max_memory_allocated(device)/1024.0**3 if device.type=='cuda' else 0.)
+        # if iteration % checkpoint_period == 0 or iteration == max_iter:
+            # save('model_{:06d}'.format(iteration), iteration)
+        end = time.perf_counter()
 
-        if iteration % checkpoint_period == 0 or iteration == max_iter:
-            checkpointer.save("model_{:06d}".format(iteration), **arguments)
+    # Optional observation of the final checkpoint. Do NOT change legacy best selection.
+    if diagnostics and diagnostics.cfg.FINAL_EVAL and max_iter > start_iter:
+        with preserve_rng(device):
+            evaluate_recall(model, val_loader, logger, max_iter, diagnostics=diagnostics, fast=fast)
+            if train_eval_loader is not None:
+                evaluate_recall(model, train_eval_loader, logger, max_iter, 'train', diagnostics,
+                                fast=fast, criterion=criterion if is_proxy else None)
+    total = time.perf_counter()-start_training_time
+    logger.info('Total training time: %s (%.4f s / completed update)',
+                datetime.timedelta(seconds=total), total/max(1,max_iter-start_iter))
+    logger.info('Best iteration: %06d | best recall %s', best_iteration, best_recall)
+    if diagnostics:
+        diagnostics.event('training_complete', completed_updates=max_iter-start_iter,
+                          total_s=total, best_iteration=best_iteration, best_recall=best_recall)
 
-    total_training_time = time.time() - start_training_time
-    total_time_str = str(datetime.timedelta(seconds=total_training_time))
-    logger.info(
-        "Total training time: {} ({:.4f} s / it)".format(
-            total_time_str, total_training_time / (max_iter)
-        )
-    )
 
-    logger.info(f"Best iteration: {best_iteration :06d} | best recall {best_recall} ")
-
-def do_test(
-        model,
-        val_loader,
-        logger
-):
-    logger.info("Start testing")
-    model.eval()
-    logger.info('test')
-
-    labels = val_loader.dataset.label_list
-    labels = np.array([int(k) for k in labels])
-    feats = feat_extractor(model, val_loader, logger=logger)
-
-    ret_metric = RetMetric(feats=feats, labels=labels)
-    recall_curr = []
-    recall_curr.append(ret_metric.recall_k(1))
-    recall_curr.append(ret_metric.recall_k(2))
-    recall_curr.append(ret_metric.recall_k(4))
-    recall_curr.append(ret_metric.recall_k(8))
-
-    print(recall_curr)
+def do_test(model, val_loader, logger):
+    logger.info('Start testing')
+    print(evaluate_recall(model, val_loader, logger))

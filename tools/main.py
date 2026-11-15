@@ -1,8 +1,12 @@
 import argparse
+import time
+import random
+import numpy as np
 import torch
 
 from cbml_benchmark.config import cfg
 from cbml_benchmark.data import build_data
+from cbml_benchmark.data.build import build_train_eval_data
 from cbml_benchmark.engine.trainer import do_train, do_test
 from cbml_benchmark.losses import build_loss, build_aux_loss
 from cbml_benchmark.modeling import build_model
@@ -12,13 +16,42 @@ from cbml_benchmark.solver import (
 from cbml_benchmark.utils.logger import setup_logger
 from cbml_benchmark.utils.checkpoint import Checkpointer
 from cbml_benchmark.utils.proxy_init import configure_proxy_classes, initialize_proxies
+from cbml_benchmark.utils.training_diagnostics import TrainingDiagnostics, sync
 
 
-def train(cfg, resume=None):
+def train(cfg, resume=None, seed=None):
     logger = setup_logger(name='Train', level=cfg.LOGGER.LEVEL)
     device = torch.device(cfg.MODEL.DEVICE)
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+    diagnostics = TrainingDiagnostics(cfg, device, logger) if cfg.DIAGNOSTICS.ENABLED else None
+    try:
+        if diagnostics:
+            diagnostics.event("seed", explicit_seed=seed, note="Seed is optional; does not guarantee GPU determinism or exact resume.")
+        _train(cfg, resume, logger, device, diagnostics)
+    except BaseException as exc:
+        if diagnostics:
+            diagnostics.event("training_error", error=repr(exc))
+        raise
+    finally:
+        if diagnostics:
+            diagnostics.close()
+
+
+def _train(cfg, resume, logger, device, diagnostics):
+    start = time.perf_counter()
     train_loader = build_data(cfg, is_train=True)
     val_loader = build_data(cfg, is_train=False)
+    train_eval_loader = None
+    if diagnostics and cfg.DIAGNOSTICS.TRAIN_RECALL:
+        train_eval_loader = build_train_eval_data(cfg)
+    if diagnostics:
+        diagnostics.event("data_setup", total_s=time.perf_counter()-start,
+                          train_images=len(train_loader.dataset), val_images=len(val_loader.dataset),
+                          train_classes=len(set(train_loader.dataset.label_list)),
+                          val_classes=len(set(val_loader.dataset.label_list)))
     use_proxies = cfg.LOSSES.NAME == 'proxy_cbml_loss'
     class_ids = None
     if use_proxies:
@@ -32,7 +65,11 @@ def train(cfg, resume=None):
     model_cfg = cfg.clone()
     if resume:
         model_cfg.MODEL.PRETRAIN = resume
+    start = time.perf_counter()
     model = build_model(model_cfg).to(device)
+    if diagnostics:
+        sync(device)
+        diagnostics.event("model_setup", total_s=time.perf_counter()-start)
     criterion = build_loss(cfg).to(device)
     criterion_aux = build_aux_loss(cfg).to(device) if cfg.LOSSES.NAME_AUX else None
 
@@ -40,7 +77,7 @@ def train(cfg, resume=None):
     loss_param = None
     if use_proxies:
         if not resume:
-            initialize_proxies(cfg, model, criterion, device)
+            initialize_proxies(cfg, model, criterion, device, diagnostics=diagnostics)
         proxy_optimizer = build_proxy_optimizer(cfg, criterion)
     else:
         # Preserve the original optimizer path for legacy registered losses.
@@ -75,10 +112,16 @@ def train(cfg, resume=None):
         if not 0 <= arguments['iteration'] <= len(train_loader):
             raise ValueError("Checkpoint iteration is outside the training budget.")
 
+    if diagnostics:
+        diagnostics.set_initial_proxies(criterion)
+        (diagnostics.path / "resolved_config.yaml").write_text(cfg.dump(), encoding="utf-8")
+        diagnostics.event("training_ready", iteration=arguments["iteration"],
+                          resume=resume, proxy_reference="resume" if resume else "initialization")
     do_train(cfg, model, train_loader, val_loader, optimizer, scheduler,
              criterion, criterion_aux, checkpointer, device,
              cfg.SOLVER.CHECKPOINT_PERIOD, arguments, logger,
-             proxy_optimizer=proxy_optimizer)
+             proxy_optimizer=proxy_optimizer, diagnostics=diagnostics,
+             train_eval_loader=train_eval_loader)
 
 
 def test(cfg):
@@ -95,6 +138,7 @@ def parse_args():
     parser.add_argument('--cfg', dest='cfg_file', required=True, type=str)
     parser.add_argument('--phase', dest='train_test', choices=['train', 'test'], default='train')
     parser.add_argument('--resume', default=None, help='Training checkpoint path')
+    parser.add_argument('--seed', type=int, default=None, help='Optional Python, NumPy and PyTorch seed (fresh comparison runs)')
     return parser.parse_args()
 
 
@@ -102,7 +146,7 @@ if __name__ == '__main__':
     args = parse_args()
     cfg.merge_from_file(args.cfg_file)
     if args.train_test == 'train':
-        train(cfg, resume=args.resume)
+        train(cfg, resume=args.resume, seed=args.seed)
     else:
         if args.resume:
             raise ValueError('--resume is for training; use MODEL.PRETRAIN for testing.')

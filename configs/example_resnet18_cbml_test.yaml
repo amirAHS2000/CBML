@@ -1,0 +1,28 @@
+# Standalone retrieval of the best saved checkpoint (use model_005000.pth for final).
+MODEL:
+  BACKBONE:
+    NAME: resnet18
+  PRETRAIN: output-resnet18-cub-cbml-64/best_model.pth
+  HEAD:
+    NAME: linear_norm
+    DIM: 64
+SAVE_DIR: output-resnet18-cub-cbml-64
+INPUT:
+  MODE: RGB
+  PIXEL_MEAN:
+  - 0.485
+  - 0.456
+  - 0.406
+  PIXEL_STD:
+  - 0.229
+  - 0.224
+  - 0.225
+DATA:
+  TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt
+  TEST_IMG_SOURCE: resource/datasets/CUB_200_2011/test.txt
+  TRAIN_BATCHSIZE: 120
+  TEST_BATCHSIZE: 128
+  NUM_WORKERS: 8
+  NUM_INSTANCES: 8
+VALIDATION:
+  VERBOSE: 200

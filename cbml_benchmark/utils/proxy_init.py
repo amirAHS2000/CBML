@@ -1,3 +1,4 @@
+import time
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -45,29 +46,43 @@ def spherical_kmeans(x, k, iterations=25):
 
 
 @torch.no_grad()
-def initialize_proxies(cfg, model, criterion, device):
+def initialize_proxies(cfg, model, criterion, device, diagnostics=None):
     """Use training images only; one deterministic-transform pass, no sampler."""
     method = cfg.LOSSES.PROXY_CBML_LOSS.INIT_METHOD
     if method == "random":
+        if diagnostics:
+            diagnostics.event("proxy_init", method=method, total_s=0.0)
         return
     if method != "kmeans":
         raise ValueError("INIT_METHOD must be random or kmeans.")
+    start = time.perf_counter()
     dataset = BaseDataSet(cfg.DATA.TRAIN_IMG_SOURCE,
                           transforms=build_transforms(cfg, is_train=False),
                           mode=cfg.INPUT.MODE)
     loader = DataLoader(dataset, batch_size=cfg.DATA.TEST_BATCHSIZE,
                         shuffle=False, num_workers=cfg.DATA.NUM_WORKERS,
                         collate_fn=collate_fn)
+    setup_s = time.perf_counter() - start
     was_training = model.training
     model.eval()
     features, labels = [], []
     try:
+        extract_start = time.perf_counter()
         for images, targets in loader:
             features.append(model(images.to(device)).cpu())
             labels.append(targets.cpu())
         features, labels = torch.cat(features), torch.cat(labels)
+        extract_s = time.perf_counter() - extract_start
+        cluster_start = time.perf_counter()
         for c in range(criterion.num_classes):
             centers = spherical_kmeans(features[labels == c], criterion.k)
             criterion.proxies[c].copy_(centers.to(device))
+        if diagnostics:
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            diagnostics.event("proxy_init", method=method, n_images=len(dataset),
+                              loader_setup_s=setup_s, extract_s=extract_s,
+                              cluster_and_copy_s=time.perf_counter()-cluster_start,
+                              total_s=time.perf_counter()-start)
     finally:
         model.train(was_training)
