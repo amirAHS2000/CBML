@@ -1,5 +1,3 @@
-
-
 import os
 from collections import OrderedDict
 
@@ -23,6 +21,8 @@ def build_model(cfg):
         pretrained_path = os.path.expanduser(cfg.MODEL.PRETRIANED_PATH[cfg.MODEL.BACKBONE.NAME])
         model.backbone.load_param(pretrained_path)
     elif os.path.exists(cfg.MODEL.PRETRAIN):
-        ckp = torch.load(cfg.MODEL.PRETRAIN)
+        ckp = torch.load(cfg.MODEL.PRETRAIN, map_location="cpu")
         model.load_state_dict(ckp['model'])
+    elif cfg.MODEL.PRETRAIN:
+        raise FileNotFoundError('Checkpoint not found: {}'.format(cfg.MODEL.PRETRAIN))
     return model

@@ -1,4 +1,3 @@
-
 import torch
 import numpy as np
 
@@ -6,9 +5,10 @@ import numpy as np
 def feat_extractor(model, data_loader, logger=None):
     model.eval()
     feats = list()
+    device = next(model.parameters()).device
 
     for i, batch in enumerate(data_loader):
-        imgs = batch[0].cuda()
+        imgs = batch[0].to(device)
 
         with torch.no_grad():
             out = model(imgs).data.cpu().numpy()

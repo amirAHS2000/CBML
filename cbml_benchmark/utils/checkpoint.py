@@ -15,7 +15,11 @@ class Checkpointer(object):
         save_dir="",
         save_to_disk=None,
         logger=None,
+        criterion=None,
+        proxy_optimizer=None,
     ):
+        self.criterion = criterion
+        self.proxy_optimizer = proxy_optimizer
         self.model = model
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -25,24 +29,32 @@ class Checkpointer(object):
             logger = logging.getLogger(__name__)
         self.logger = logger
 
-    def save(self, name):
+    def save(self, name, **metadata):
         if not self.save_dir:
             return
 
-        data = {}
+        os.makedirs(self.save_dir, exist_ok=True)
+        data = dict(metadata)
         data["model"] = self.model.state_dict()
         if self.optimizer is not None:
             data["optimizer"] = self.optimizer.state_dict()
         if self.scheduler is not None:
             data["scheduler"] = self.scheduler.state_dict()
 
+        if self.criterion is not None:
+            data["criterion"] = self.criterion.state_dict()
+        if self.proxy_optimizer is not None:
+            data["proxy_optimizer"] = self.proxy_optimizer.state_dict()
+
         save_file = os.path.join(self.save_dir, "{}.pth".format(name))
         self.logger.info("Saving checkpoint to {}".format(save_file))
         torch.save(data, save_file)
+        if name != "best_model":
+            self.tag_last_checkpoint(os.path.abspath(save_file))
 
-    def load(self, f=None):
-        if self.has_checkpoint():
-            # override argument with existing checkpoint
+    def load(self, f=None, expected_classes=None, require_proxy_state=False):
+        if not f and self.has_checkpoint():
+            # Use the recorded checkpoint when no explicit path is provided.
             f = self.get_checkpoint_file()
         if not f:
             # no checkpoint could be found
@@ -50,7 +62,20 @@ class Checkpointer(object):
             return {}
         self.logger.info("Loading checkpoint from {}".format(f))
         checkpoint = self._load_file(f)
-        self._load_model(checkpoint)
+        if expected_classes is not None and checkpoint.get("class_ids") != expected_classes:
+            raise ValueError("Checkpoint class IDs do not match the training dataset.")
+        if require_proxy_state:
+            required = ("criterion", "proxy_optimizer", "optimizer", "scheduler", "iteration")
+            if any(key not in checkpoint for key in required):
+                raise ValueError("Incomplete proxy training checkpoint.")
+        if require_proxy_state:
+            self.model.load_state_dict(checkpoint.pop("model"), strict=True)
+        else:
+            self._load_model(checkpoint)
+        if self.criterion is not None and "criterion" in checkpoint:
+            self.criterion.load_state_dict(checkpoint.pop("criterion"))
+        if self.proxy_optimizer is not None and "proxy_optimizer" in checkpoint:
+            self.proxy_optimizer.load_state_dict(checkpoint.pop("proxy_optimizer"))
         if "optimizer" in checkpoint and self.optimizer:
             self.logger.info("Loading optimizer from {}".format(f))
             self.optimizer.load_state_dict(checkpoint.pop("optimizer"))

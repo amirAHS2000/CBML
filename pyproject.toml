@@ -16,6 +16,9 @@ authors = [
 dependencies = [
     "torch",
     "torchvision",
+    "numpy",
+    "yacs",
+    "Pillow",
 ]
 
 [project.urls]

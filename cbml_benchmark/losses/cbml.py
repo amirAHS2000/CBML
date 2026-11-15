@@ -18,6 +18,9 @@ class CBMLLoss(nn.Module):
 
     LOSSES.CBML_LOSS.NEG_MODE
         'proto' : negative term on the closest wrong-class prototype (default, as before)
+        'proto_sg' : prototype negatives with STOP-GRADIENT on the selected wrong-class prototype: the negative term
+                  moves the features (backbone/head) only; no prototype is updated by foreign data. The positive
+                  prototype is updated by own-class anchors as before. One set of prototypes per class.
         'inst'  : hybrid. Positive term on the closest OWN-class prototype only; negative term on the hard
                   in-batch INSTANCE negatives selected with the paper's rule, using the prototype positive as
                   the reference (m_ik + MARGIN > s+). Prototypes then receive gradient from own-class anchors
@@ -44,7 +47,7 @@ class CBMLLoss(nn.Module):
         self.reg_nu = getattr(cfg.LOSSES.CBML_LOSS, 'REG_NU', 0.99)
 
         self.neg_mode = getattr(cfg.LOSSES.CBML_LOSS, 'NEG_MODE', 'proto')
-        assert self.neg_mode in ('proto', 'inst'), f"unknown NEG_MODE {self.neg_mode}"
+        assert self.neg_mode in ('proto', 'proto_sg', 'inst'), f"unknown NEG_MODE {self.neg_mode}"
         self.inst_neg_a = getattr(cfg.LOSSES.CBML_LOSS, 'INST_NEG_A', 1.0)
         self.inst_neg_b = getattr(cfg.LOSSES.CBML_LOSS, 'INST_NEG_B', 0.01)
         if self.neg_mode == 'inst':
@@ -141,7 +144,9 @@ class CBMLLoss(nn.Module):
             # map back to absolute class index
             best_neg_class_idx = neg_class_indices[best_neg_class_idx_masked].item()
             best_neg_proto_idx = best_neg_proto_idx.item()
-            best_neg_proto = P_3d[best_neg_class_idx, best_neg_proto_idx].detach()
+            best_neg_proto = P_3d[best_neg_class_idx, best_neg_proto_idx]
+            if self.neg_mode == 'proto_sg':
+                best_neg_proto = best_neg_proto.detach()   # no gradient to the wrong-class prototype
 
             self.neg_proto_counts[best_neg_class_idx, best_neg_proto_idx] += 1
 
