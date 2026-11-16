@@ -84,7 +84,7 @@ def do_train(
                 best_recall, best_iteration = recall_curr[0], iteration
                 arguments.update(best_iteration=best_iteration, best_recall=best_recall)
                 logger.info('Best iteration %d: recall@1: %.3f', iteration, best_recall)
-                save('best_model', iteration)
+                # save('best_model', iteration)
             else:
                 logger.info('Recall@1 at iteration %06d: recall@1: %.3f', iteration, recall_curr[0])
         # Extra train evaluation has its own RNG scope; no sampling or gradients.

@@ -31,11 +31,11 @@ LOSSES:
   NAME_AUX: ''
   PROXY_CBML_LOSS:
     NUM_CLASSES: 0
-    K: 3
+    K: 1
     POS_A: 0.5
     POS_B: 0.1
     NEG_A: 0.2
-    NEG_B: 0.5
+    NEG_B: 0.1
     DETACH_NEGATIVE: true
     PROXY_LR: 0.01
     INIT_METHOD: kmeans
