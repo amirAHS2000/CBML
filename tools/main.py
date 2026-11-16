@@ -104,8 +104,14 @@ def _train(cfg, resume, logger, device, diagnostics):
     if resume:
         state = checkpointer.load(resume, expected_classes=class_ids,
                                   require_proxy_state=use_proxies)
-        if use_proxies and state.get("proxy_config") != arguments["proxy_config"]:
-            raise ValueError("Proxy configuration differs from the checkpoint; use the original training config.")
+        if use_proxies:
+            saved_config = dict(state.get("proxy_config") or {})
+            # Pre-E3 checkpoints used the original batch-averaged rule.
+            saved_config.setdefault("COUNT_AWARE", False)
+            saved_config.setdefault("COUNT_DAMPING", 10.0)
+            saved_config.setdefault("COUNT_MIN_ASSIGNMENTS", 3)
+            if saved_config != arguments["proxy_config"]:
+                raise ValueError("Proxy configuration differs from the checkpoint; use the original training config.")
         for key in ('iteration', 'best_iteration', 'best_recall'):
             if key in state:
                 arguments[key] = state[key]

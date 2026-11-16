@@ -10,7 +10,7 @@ from cbml_benchmark.utils.feat_extractor import feat_extractor
 from cbml_benchmark.utils.freeze_bn import set_bn_eval
 from cbml_benchmark.utils.metric_logger import MetricLogger
 from cbml_benchmark.utils.training_diagnostics import (
-    gradient_norms, preserve_rng, recall_from_matrix, sampled_proxy_stats, sync,
+    gradient_norms, instance_geometry, preserve_rng, recall_from_matrix, sampled_proxy_stats, sync,
 )
 
 
@@ -41,6 +41,11 @@ def evaluate_recall(model, loader, logger, iteration=0, split='validation',
         diagnostics.record_recall(iteration, split, len(labels), recalls,
                                   extraction, similarity, ranking, time.perf_counter()-start)
     logger.info('%s iteration %d recall@1/2/4/8: %s', split, iteration, recalls)
+    if diagnostics and getattr(diagnostics.cfg, 'INSTANCE_GEOMETRY', False):
+        t = time.perf_counter()
+        geometry = instance_geometry(metric.sim_mat, labels)
+        diagnostics.event('instance_geometry', iteration=iteration, split=split,
+                          total_s=time.perf_counter()-t, **geometry)
     del metric  # release the full similarity matrix before proxy diagnostics
     if diagnostics and criterion is not None and split == 'train':
         diagnostics.proxy_snapshot(iteration, feats, labels, criterion)
@@ -62,6 +67,9 @@ def do_train(
     start_training_time = time.perf_counter()
     fast = bool(diagnostics and diagnostics.cfg.FAST_RECALL)
     is_proxy = hasattr(criterion, 'proxies') and hasattr(criterion, 'loss_components')
+    count_aware = bool(is_proxy and getattr(criterion, 'count_aware', False))
+    if count_aware and (proxy_optimizer is None or criterion_aux is not None):
+        raise ValueError('Count-aware updates require a dedicated proxy optimizer and no auxiliary loss.')
 
     def save(name, iteration):
         start = time.perf_counter()
@@ -84,7 +92,7 @@ def do_train(
                 best_recall, best_iteration = recall_curr[0], iteration
                 arguments.update(best_iteration=best_iteration, best_recall=best_recall)
                 logger.info('Best iteration %d: recall@1: %.3f', iteration, best_recall)
-                # save('best_model', iteration)
+                save('best_model', iteration)
             else:
                 logger.info('Recall@1 at iteration %06d: recall@1: %.3f', iteration, recall_curr[0])
         # Extra train evaluation has its own RNG scope; no sampling or gradients.
@@ -128,8 +136,8 @@ def do_train(
                 split_feats = torch.split(feats, cfg.LOSSES.ADV_LOSS.CLASS_DIM, dim=1)
                 loss_aux = criterion_aux(split_feats[0], split_feats[1])
             loss = (1-cfg.LOSSES.AUX_WEIGHT)*loss + cfg.LOSSES.AUX_WEIGHT*loss_aux
-        elif diagnostics and is_proxy:
-            if profile:
+        elif is_proxy and (diagnostics or count_aware):
+            if profile or count_aware:
                 loss_pos, loss_neg, details = criterion.loss_components(feats, targets, return_details=True)
             else:
                 loss_pos, loss_neg = criterion.loss_components(feats, targets)
@@ -150,6 +158,14 @@ def do_train(
                 extra.update(sampled_proxy_stats(details, criterion))
                 before = criterion.proxies.detach().clone()
             mark('pre_update_diagnostics_s')
+        if count_aware:
+            extra.update(criterion.scale_proxy_gradients(details, collect_stats=profile))
+            mark('proxy_gradient_scaling_s')
+        elif profile and details is not None:
+            # Identity scaling for the legacy rule; keep comparison fields explicit.
+            extra['proxy_grad_norm_before_scaling'] = extra['proxy_grad_norm']
+            extra['proxy_grad_norm_after_scaling'] = extra['proxy_grad_norm']
+            extra.update(proxy_scale_min=1.0, proxy_scale_mean=1.0, proxy_scale_max=1.0)
         optimizer.step()
         if proxy_optimizer is not None:
             proxy_optimizer.step()
@@ -181,8 +197,8 @@ def do_train(
                         datetime.timedelta(seconds=int(eta_seconds)), iteration, meters,
                         optimizer.param_groups[0]['lr'],
                         torch.cuda.max_memory_allocated(device)/1024.0**3 if device.type=='cuda' else 0.)
-        # if iteration % checkpoint_period == 0 or iteration == max_iter:
-            # save('model_{:06d}'.format(iteration), iteration)
+        if iteration % checkpoint_period == 0 or iteration == max_iter:
+            save('model_{:06d}'.format(iteration), iteration)
         end = time.perf_counter()
 
     # Optional observation of the final checkpoint. Do NOT change legacy best selection.

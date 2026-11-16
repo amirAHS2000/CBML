@@ -21,11 +21,11 @@ def summarize(path):
         if e['event'] in ('environment','seed','data_setup','model_setup','proxy_init','training_ready'):
             lines.append(json.dumps(e, sort_keys=True))
     lines += ['', 'TIMING (seconds; sampled stage medians, not summed wall time)']
-    for key in ('data_wait_s','step_wall_s','transfer_and_scheduler_s','forward_s','loss_s','backward_s','optimizer_s','pre_update_diagnostics_s','post_update_diagnostics_s'):
+    for key in ('data_wait_s','step_wall_s','transfer_and_scheduler_s','forward_s','loss_s','backward_s','optimizer_s','pre_update_diagnostics_s','proxy_gradient_scaling_s','post_update_diagnostics_s'):
         v = [r[key] for r in steps if r.get(key) is not None]
         if v:
             lines.append(f'{key:30s} median={median(v):.5f}  n={len(v)}')
-    for name in ('evaluation','checkpoint','proxy_snapshot'):
+    for name in ('evaluation','checkpoint','proxy_snapshot','instance_geometry'):
         e = [r for r in events if r['event']==name]
         if e:
             lines.append(f'{name:30s} total={sum(r.get("total_s",0) for r in e):.3f}  count={len(e)}')
@@ -51,6 +51,16 @@ def summarize(path):
     for e in events:
         if e['event']=='proxy_snapshot':
             lines.append(json.dumps(e, sort_keys=True))
+    lines += ['', 'INSTANCE GEOMETRY (explicit self exclusion; original recall unchanged)']
+    for e in events:
+        if e['event']=='instance_geometry':
+            lines.append(json.dumps(e, sort_keys=True))
+    lines += ['', 'PROXY GRADIENT SCALING (sampled training steps)']
+    for key in ('proxy_grad_norm_before_scaling', 'proxy_grad_norm_after_scaling',
+                'proxy_scale_min', 'proxy_scale_mean', 'proxy_scale_max'):
+        v = [s[key] for s in steps if s.get(key) is not None]
+        if v:
+            lines.append(f'{key:35s} median={median(v):.6f} n={len(v)}')
     lines += ['', 'LAST SAMPLED TRAINING STEP']
     profiled = [s for s in steps if s.get('profiled')]
     if profiled:

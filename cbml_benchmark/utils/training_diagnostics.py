@@ -54,6 +54,45 @@ def recall_from_matrix(sim, labels, ks=(1, 2, 4, 8)):
     return [float(np.mean(ranks < k)) for k in ks]
 
 
+def instance_geometry(sim, labels):
+    """Read-only geometry on the existing retrieval matrix, excluding self.
+
+    Pooled moments count ordered non-self pairs, not class-balanced averages.
+    Nearest-gap summaries require both same-class and foreign-class peers.
+    This does not modify RetMetric's recall/tie convention.
+    """
+    labels = np.asarray(labels)
+    moments = {'same': [0, 0., 0.], 'different': [0, 0., 0.]}
+    near_pos, near_neg = [], []
+    for i, row in enumerate(sim):
+        same = labels == labels[i]
+        other = ~same
+        same[i] = False
+        pos, neg = row[same], row[other]
+        for key, vals in (('same', pos), ('different', neg)):
+            v = vals.astype(np.float64, copy=False)
+            m = moments[key]
+            m[0] += len(v)
+            m[1] += float(v.sum())
+            m[2] += float(np.dot(v, v))
+        if len(pos) and len(neg):
+            near_pos.append(float(pos.max()))
+            near_neg.append(float(neg.max()))
+    result = {'n_images': len(labels), 'valid_queries': len(near_pos)}
+    for key, (n, total, squares) in moments.items():
+        result[key+'_pair_count'] = n
+        result[key+'_pair_mean'] = total/n if n else None
+        result[key+'_pair_std'] = float(np.sqrt(max(0., squares/n-(total/n)**2))) if n else None
+    a, b = np.asarray(near_pos), np.asarray(near_neg)
+    gap = a-b
+    for key, v in (('near_pos', a), ('near_neg', b), ('instance_gap', gap)):
+        result[key+'_mean'] = float(v.mean()) if len(v) else None
+        for q in (10, 50, 90):
+            result[key+'_p'+str(q)] = float(np.percentile(v, q)) if len(v) else None
+    result['instance_violation_fraction'] = float((gap <= 0).mean()) if len(gap) else None
+    return result
+
+
 def _jsonable(value):
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
@@ -85,7 +124,7 @@ class TrainingDiagnostics:
         self.recall_file.flush()
         self.proxy_file = (self.path / 'proxy_snapshots.csv').open('w', newline='', encoding='utf-8')
         self.proxy_csv = csv.writer(self.proxy_file)
-        self.proxy_csv.writerow(['iteration', 'class_id', 'proxy_id', 'assigned_count', 'mean_assigned_cosine', 'centroid_cosine', 'raw_norm', 'cosine_to_initial', 'nearest_other_proxy_cosine', 'mean_same_class_proxy_cosine'])
+        self.proxy_csv.writerow(['iteration', 'class_id', 'proxy_id', 'assigned_count', 'mean_assigned_cosine', 'centroid_cosine', 'raw_norm', 'cosine_to_initial', 'nearest_other_proxy_cosine', 'mean_same_class_proxy_cosine', 'negative_selected_count', 'negative_score_gradient_weight'])
         self.proxy_file.flush()
         self.handler = logging.FileHandler(self.path / 'training.log', encoding='utf-8')
         self.handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
@@ -136,13 +175,23 @@ class TrainingDiagnostics:
         sims = np.full((c,k), np.nan)
         centroids = np.full((c,k), np.nan)
         pos_all, neg_all = [], []
+        neg_counts = np.zeros(c*k, dtype=np.int64)
+        neg_weights = np.zeros(c*k, dtype=np.float64)
         flat = p.reshape(c*k, d)
         class_index = np.repeat(np.arange(c), k)
         for offset in range(0, len(x), 512):
             scores = x[offset:offset+512] @ flat.T
             same = y[offset:offset+512,None] == class_index[None,:]
             pos_all.extend(np.max(np.where(same, scores, -np.inf), axis=1))
-            neg_all.extend(np.max(np.where(~same, scores, -np.inf), axis=1))
+            masked = np.where(~same, scores, -np.inf)
+            neg_ids = masked.argmax(axis=1)
+            neg_scores = masked[np.arange(len(scores)), neg_ids]
+            neg_all.extend(neg_scores)
+            # Stable sigmoid(z)/beta, i.e. the negative score coefficient.
+            z = (neg_scores.astype(np.float64)-criterion.neg_a)/criterion.neg_b
+            weights = np.exp(-np.logaddexp(0., -z))/criterion.neg_b
+            neg_counts += np.bincount(neg_ids, minlength=c*k)
+            neg_weights += np.bincount(neg_ids, weights=weights, minlength=c*k)
         for cls in range(c):
             members = x[y == cls]
             score = members @ p[cls].T
@@ -165,11 +214,14 @@ class TrainingDiagnostics:
         within = (p @ p.transpose(0,2,1)).sum(-1)
         within = (within - (p*p).sum(-1)) / (k-1) if k>1 else np.full((c,k), np.nan)
         norms = np.linalg.norm(p_raw, axis=-1)
+        neg_counts = neg_counts.reshape(c,k)
+        neg_weights = neg_weights.reshape(c,k)
+        unused = counts == 0
         def val(t, a, b):
             z = float(t[a,b]); return z if np.isfinite(z) else ''
         for a in range(c):
             for b in range(k):
-                self.proxy_csv.writerow([iteration,a,b,int(counts[a,b]),val(sims,a,b),val(centroids,a,b),val(norms,a,b),val(alignment,a,b),val(nearest,a,b),val(within,a,b)])
+                self.proxy_csv.writerow([iteration,a,b,int(counts[a,b]),val(sims,a,b),val(centroids,a,b),val(norms,a,b),val(alignment,a,b),val(nearest,a,b),val(within,a,b),int(neg_counts[a,b]),float(neg_weights[a,b])])
         self.proxy_file.flush()
         pos_all, neg_all = np.asarray(pos_all), np.asarray(neg_all)
         gap = pos_all-neg_all
@@ -179,6 +231,12 @@ class TrainingDiagnostics:
                    mean_cosine_to_initial=float(alignment.mean()),
                    train_pos_mean=float(pos_all.mean()), train_neg_mean=float(neg_all.mean()),
                    train_gap_mean=float(gap.mean()), train_violation_fraction=float((gap<=0).mean()),
+                   total_negative_selections=int(neg_counts.sum()),
+                   unused_negative_selections=int(neg_counts[unused].sum()),
+                   unused_negative_fraction=float(neg_counts[unused].sum()/neg_counts.sum()),
+                   total_negative_score_weight=float(neg_weights.sum()),
+                   unused_negative_score_weight=float(neg_weights[unused].sum()),
+                   unused_negative_weight_fraction=float(neg_weights[unused].sum()/neg_weights.sum()) if neg_weights.sum() else None,
                    total_s=time.perf_counter()-start)
 
 

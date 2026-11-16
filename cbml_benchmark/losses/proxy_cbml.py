@@ -18,6 +18,14 @@ class ProxyCBMLLoss(nn.Module):
         self.pos_a, self.pos_b = opt.POS_A, opt.POS_B
         self.neg_a, self.neg_b = opt.NEG_A, opt.NEG_B
         self.detach_negative = opt.DETACH_NEGATIVE
+        self.count_aware = getattr(opt, "COUNT_AWARE", False)
+        self.count_damping = getattr(opt, "COUNT_DAMPING", 10.0)
+        self.count_min_assignments = getattr(opt, "COUNT_MIN_ASSIGNMENTS", 3)
+        if self.count_aware:
+            if not self.detach_negative:
+                raise ValueError("Count-aware updates require DETACH_NEGATIVE=True.")
+            if not (0 < self.count_damping < float('inf')) or self.count_min_assignments < 1:
+                raise ValueError("Require finite COUNT_DAMPING > 0 and COUNT_MIN_ASSIGNMENTS >= 1.")
         if self.num_classes < 2 or self.k < 1 or self.dim < 1:
             raise ValueError("Require C >= 2, K >= 1 and D >= 1.")
         if self.pos_b <= 0 or self.neg_b <= 0:
@@ -66,6 +74,36 @@ class ProxyCBMLLoss(nn.Module):
                 "neg_c": neg_c, "neg_k": neg_k,
             }
         return loss_pos, loss_neg
+
+    @torch.no_grad()
+    def scale_proxy_gradients(self, details, collect_stats=False):
+        """E3: scale raw-parameter gradients from the SAME forward assignments.
+
+        Call once after backward and before the proxy SGD step. This does not
+        modify network gradients, mining, or the forward scalar objective.
+        """
+        if not self.count_aware:
+            return {}
+        grad = self.proxies.grad
+        if grad is None:
+            raise RuntimeError("Call scale_proxy_gradients after loss.backward().")
+        ids = details['labels'] * self.k + details['pos_k']
+        counts = torch.bincount(ids, minlength=self.num_classes * self.k)
+        active = counts > 0
+        factors = ids.numel() / (self.count_damping * counts.clamp_min(self.count_min_assignments).to(grad.dtype))
+        factors = torch.where(active, factors, torch.zeros_like(factors))
+        before = float(grad.norm()) if collect_stats else None
+        grad.mul_(factors.reshape(self.num_classes, self.k, 1))
+        if collect_stats:
+            selected = factors[active]
+            return {
+                'proxy_grad_norm_before_scaling': before,
+                'proxy_grad_norm_after_scaling': float(grad.norm()),
+                'proxy_scale_min': float(selected.min()),
+                'proxy_scale_mean': float(selected.mean()),
+                'proxy_scale_max': float(selected.max()),
+            }
+        return {}
 
     def forward(self, feats, labels):
         loss_pos, loss_neg = self.loss_components(feats, labels)
