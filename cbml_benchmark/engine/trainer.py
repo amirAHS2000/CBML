@@ -12,6 +12,7 @@ from cbml_benchmark.utils.metric_logger import MetricLogger
 from cbml_benchmark.utils.training_diagnostics import (
     gradient_norms, instance_geometry, preserve_rng, recall_from_matrix, sampled_proxy_stats, sync,
 )
+from cbml_benchmark.utils.gmm_diagnostics import sampled_gmm_stats
 
 
 def update_ema_variables(model, ema_model):
@@ -66,10 +67,11 @@ def do_train(
     best_recall = arguments.get('best_recall', 0)
     start_training_time = time.perf_counter()
     fast = bool(diagnostics and diagnostics.cfg.FAST_RECALL)
-    is_proxy = hasattr(criterion, 'proxies') and hasattr(criterion, 'loss_components')
+    is_gmm = bool(getattr(criterion, 'is_gmm_proxy_loss', False))
+    is_proxy = is_gmm or (hasattr(criterion, 'proxies') and hasattr(criterion, 'loss_components'))
     count_aware = bool(is_proxy and getattr(criterion, 'count_aware', False))
-    if count_aware and (proxy_optimizer is None or criterion_aux is not None):
-        raise ValueError('Count-aware updates require a dedicated proxy optimizer and no auxiliary loss.')
+    if (count_aware or is_gmm) and (proxy_optimizer is None or criterion_aux is not None):
+        raise ValueError('Proxy-based special updates require a dedicated optimizer and no auxiliary loss.')
 
     def save(name, iteration):
         start = time.perf_counter()
@@ -136,6 +138,11 @@ def do_train(
                 split_feats = torch.split(feats, cfg.LOSSES.ADV_LOSS.CLASS_DIM, dim=1)
                 loss_aux = criterion_aux(split_feats[0], split_feats[1])
             loss = (1-cfg.LOSSES.AUX_WEIGHT)*loss + cfg.LOSSES.AUX_WEIGHT*loss_aux
+        elif is_gmm:
+            if profile:
+                loss, details = criterion.loss_and_details(feats, targets, return_details=True)
+            else:
+                loss = criterion(feats, targets)
         elif is_proxy and (diagnostics or count_aware):
             if profile or count_aware:
                 loss_pos, loss_neg, details = criterion.loss_components(feats, targets, return_details=True)
@@ -148,6 +155,10 @@ def do_train(
         optimizer.zero_grad()
         if proxy_optimizer is not None:
             proxy_optimizer.zero_grad()
+        # GMM weights use a custom constrained step, not torch.optim;
+        # explicitly clear their gradients on EVERY iteration.
+        if is_gmm:
+            criterion.mixture_weights.grad = None
         loss.backward()
         mark('backward_s')
 
@@ -155,7 +166,12 @@ def do_train(
         if profile:
             extra.update(gradient_norms(model))
             if details is not None:
-                extra.update(sampled_proxy_stats(details, criterion))
+                if is_gmm:
+                    extra.update(sampled_gmm_stats(details, criterion))
+                    before_weights = criterion.mixture_weights.detach().clone()
+                    before_beta = float(criterion.beta.detach())
+                else:
+                    extra.update(sampled_proxy_stats(details, criterion))
                 before = criterion.proxies.detach().clone()
             mark('pre_update_diagnostics_s')
         if count_aware:
@@ -169,6 +185,8 @@ def do_train(
         optimizer.step()
         if proxy_optimizer is not None:
             proxy_optimizer.step()
+        if is_gmm:
+            extra.update(criterion.step_mixture_weights(collect_stats=profile))
         mark('optimizer_s')
         if profile and details is not None:
             with torch.no_grad():
@@ -177,6 +195,18 @@ def do_train(
                 assigned = torch.zeros(criterion.num_classes*criterion.k, dtype=torch.bool, device=device)
                 assigned[details['labels']*criterion.k+details['pos_k']] = True
                 extra['unassigned_proxy_update_norm'] = float(delta.reshape(-1, criterion.dim)[~assigned].norm())
+                if is_gmm:
+                    wd = criterion.mixture_weights.detach() - before_weights
+                    present = torch.zeros(criterion.num_classes, dtype=torch.bool, device=device)
+                    present[details['labels']] = True
+                    extra.update(
+                        mixture_weight_update_norm=float(wd.norm()),
+                        foreign_only_proxy_update_norm=float(delta[~present].norm()),
+                        foreign_only_weight_update_norm=float(wd[~present].norm()),
+                        beta_before=before_beta,
+                        beta_after=float(criterion.beta),
+                        log_beta_grad=float(criterion.log_beta.grad) if criterion.log_beta.grad is not None else None,
+                    )
             mark('post_update_diagnostics_s')
         if loss_pos is not None:
             loss_val, pos_val, neg_val = torch.stack([loss.detach(), loss_pos.detach(), loss_neg.detach()]).cpu().tolist()

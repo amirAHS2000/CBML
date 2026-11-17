@@ -16,6 +16,7 @@ from .histogram_loss import HistogramLoss
 from .center_loss import CenterLoss
 from .advloss import AdvLoss
 from .proxy_cbml import ProxyCBMLLoss
+from .gmm_proxy import GaussianMixtureProxyLoss
 from .registry import LOSS
 
 

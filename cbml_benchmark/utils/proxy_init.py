@@ -13,7 +13,8 @@ def configure_proxy_classes(cfg, dataset):
     labels = sorted({int(y) for y in dataset.label_list})
     if len(labels) < 2 or labels != list(range(len(labels))):
         raise ValueError("Training labels must be contiguous 0..C-1 with C >= 2.")
-    opt = cfg.LOSSES.PROXY_CBML_LOSS
+    opt = (cfg.LOSSES.GMM_PROXY_LOSS if cfg.LOSSES.NAME == "gmm_proxy_loss"
+           else cfg.LOSSES.PROXY_CBML_LOSS)
     if opt.NUM_CLASSES not in (0, len(labels)):
         raise ValueError("Configured NUM_CLASSES disagrees with the dataset.")
     opt.NUM_CLASSES = len(labels)
@@ -48,7 +49,8 @@ def spherical_kmeans(x, k, iterations=25):
 @torch.no_grad()
 def initialize_proxies(cfg, model, criterion, device, diagnostics=None):
     """Use training images only; one deterministic-transform pass, no sampler."""
-    method = cfg.LOSSES.PROXY_CBML_LOSS.INIT_METHOD
+    method = (cfg.LOSSES.GMM_PROXY_LOSS.INIT_METHOD if cfg.LOSSES.NAME == "gmm_proxy_loss"
+              else cfg.LOSSES.PROXY_CBML_LOSS.INIT_METHOD)
     if method == "random":
         if diagnostics:
             diagnostics.event("proxy_init", method=method, total_s=0.0)

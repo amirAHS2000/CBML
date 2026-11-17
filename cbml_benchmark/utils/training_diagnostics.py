@@ -124,7 +124,7 @@ class TrainingDiagnostics:
         self.recall_file.flush()
         self.proxy_file = (self.path / 'proxy_snapshots.csv').open('w', newline='', encoding='utf-8')
         self.proxy_csv = csv.writer(self.proxy_file)
-        self.proxy_csv.writerow(['iteration', 'class_id', 'proxy_id', 'assigned_count', 'mean_assigned_cosine', 'centroid_cosine', 'raw_norm', 'cosine_to_initial', 'nearest_other_proxy_cosine', 'mean_same_class_proxy_cosine', 'negative_selected_count', 'negative_score_gradient_weight'])
+        self.proxy_csv.writerow(['iteration', 'class_id', 'proxy_id', 'assigned_count', 'mean_assigned_cosine', 'centroid_cosine', 'raw_norm', 'cosine_to_initial', 'nearest_other_proxy_cosine', 'mean_same_class_proxy_cosine', 'negative_selected_count', 'negative_score_gradient_weight', 'mixture_weight'])
         self.proxy_file.flush()
         self.handler = logging.FileHandler(self.path / 'training.log', encoding='utf-8')
         self.handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
@@ -165,6 +165,9 @@ class TrainingDiagnostics:
     @torch.no_grad()
     def proxy_snapshot(self, iteration, feats, labels, criterion):
         """Whole training set assignment counts and centroid alignment; CPU only."""
+        if getattr(criterion, 'is_gmm_proxy_loss', False):
+            from cbml_benchmark.utils.gmm_diagnostics import gmm_proxy_snapshot
+            return gmm_proxy_snapshot(self, iteration, feats, labels, criterion)
         start = time.perf_counter()
         p_raw = criterion.proxies.detach().cpu().numpy()
         p = p_raw / np.maximum(np.linalg.norm(p_raw, axis=-1, keepdims=True), 1e-12)
@@ -221,7 +224,7 @@ class TrainingDiagnostics:
             z = float(t[a,b]); return z if np.isfinite(z) else ''
         for a in range(c):
             for b in range(k):
-                self.proxy_csv.writerow([iteration,a,b,int(counts[a,b]),val(sims,a,b),val(centroids,a,b),val(norms,a,b),val(alignment,a,b),val(nearest,a,b),val(within,a,b),int(neg_counts[a,b]),float(neg_weights[a,b])])
+                self.proxy_csv.writerow([iteration,a,b,int(counts[a,b]),val(sims,a,b),val(centroids,a,b),val(norms,a,b),val(alignment,a,b),val(nearest,a,b),val(within,a,b),int(neg_counts[a,b]),float(neg_weights[a,b]),''])
         self.proxy_file.flush()
         pos_all, neg_all = np.asarray(pos_all), np.asarray(neg_all)
         gap = pos_all-neg_all

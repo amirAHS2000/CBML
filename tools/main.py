@@ -52,14 +52,14 @@ def _train(cfg, resume, logger, device, diagnostics):
                           train_images=len(train_loader.dataset), val_images=len(val_loader.dataset),
                           train_classes=len(set(train_loader.dataset.label_list)),
                           val_classes=len(set(val_loader.dataset.label_list)))
-    use_proxies = cfg.LOSSES.NAME == 'proxy_cbml_loss'
+    use_proxies = cfg.LOSSES.NAME in ('proxy_cbml_loss', 'gmm_proxy_loss')
     class_ids = None
     if use_proxies:
         if cfg.LOSSES.NAME_AUX:
-            raise ValueError("ProxyCBMLLoss must be the sole loss for this integration.")
+            raise ValueError("A proxy-based primary loss requires NAME_AUX to be empty.")
         class_ids = configure_proxy_classes(cfg, train_loader.dataset)
-    elif cfg.LOSSES.NAME_AUX == 'proxy_cbml_loss':
-        raise ValueError("ProxyCBMLLoss is supported as the primary loss only.")
+    elif cfg.LOSSES.NAME_AUX in ('proxy_cbml_loss', 'gmm_proxy_loss'):
+        raise ValueError("Proxy-based losses are supported as the primary loss only.")
 
     logger.info(cfg)
     model_cfg = cfg.clone()
@@ -94,8 +94,12 @@ def _train(cfg, resume, logger, device, diagnostics):
     arguments = {"iteration": 0}
     if use_proxies:
         arguments["class_ids"] = class_ids
-        arguments["proxy_config"] = dict(cfg.LOSSES.PROXY_CBML_LOSS)
+        gmm = cfg.LOSSES.NAME == 'gmm_proxy_loss'
+        opt = cfg.LOSSES.GMM_PROXY_LOSS if gmm else cfg.LOSSES.PROXY_CBML_LOSS
+        arguments["proxy_config"] = dict(opt)
         arguments["proxy_config"]["DIM"] = cfg.MODEL.HEAD.DIM
+        if gmm:
+            arguments["proxy_config"]["LOSS_NAME"] = 'gmm_proxy_loss' 
     checkpointer = Checkpointer(
         model, optimizer, scheduler, cfg.SAVE_DIR,
         criterion=criterion if use_proxies else None,
@@ -106,10 +110,11 @@ def _train(cfg, resume, logger, device, diagnostics):
                                   require_proxy_state=use_proxies)
         if use_proxies:
             saved_config = dict(state.get("proxy_config") or {})
-            # Pre-E3 checkpoints used the original batch-averaged rule.
-            saved_config.setdefault("COUNT_AWARE", False)
-            saved_config.setdefault("COUNT_DAMPING", 10.0)
-            saved_config.setdefault("COUNT_MIN_ASSIGNMENTS", 3)
+            if cfg.LOSSES.NAME == 'proxy_cbml_loss':
+                # Pre-E3 checkpoints used the original batch-averaged rule.
+                saved_config.setdefault("COUNT_AWARE", False)
+                saved_config.setdefault("COUNT_DAMPING", 10.0)
+                saved_config.setdefault("COUNT_MIN_ASSIGNMENTS", 3)
             if saved_config != arguments["proxy_config"]:
                 raise ValueError("Proxy configuration differs from the checkpoint; use the original training config.")
         for key in ('iteration', 'best_iteration', 'best_recall'):

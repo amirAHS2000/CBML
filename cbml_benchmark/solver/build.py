@@ -33,6 +33,12 @@ def build_lr_scheduler(cfg, optimizer):
 
 def build_proxy_optimizer(cfg, criterion):
     # No momentum or decay: rows with zero gradient stay unchanged.
+    if getattr(criterion, 'is_gmm_proxy_loss', False):
+        # Mixture weights use their separate Lagrange/projected update.
+        return torch.optim.SGD([
+            {'params': [criterion.proxies], 'lr': cfg.LOSSES.GMM_PROXY_LOSS.PROXY_LR},
+            {'params': [criterion.log_beta], 'lr': cfg.LOSSES.GMM_PROXY_LOSS.BETA_LR},
+        ], momentum=0.0, weight_decay=0.0)
     return torch.optim.SGD(
         [criterion.proxies],
         lr=cfg.LOSSES.PROXY_CBML_LOSS.PROXY_LR,
