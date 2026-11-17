@@ -8,7 +8,7 @@ MODEL:
   HEAD:
     NAME: linear_norm
     DIM: 64
-SAVE_DIR: output-resnet18-cub-gmm-proxy-theta15-uniform
+SAVE_DIR: output-resnet18-cub-gmm-proxy-fixed-theta15
 INPUT:
   MODE: RGB
   PIXEL_MEAN: [0.485, 0.456, 0.406]

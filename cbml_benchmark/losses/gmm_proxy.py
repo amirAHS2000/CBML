@@ -100,7 +100,10 @@ class GaussianMixtureProxyLoss(nn.Module):
         self.mixture_weights = nn.Parameter(torch.full(
             (self.num_classes, self.k), 1.0 / self.k
         ))
-        self.log_beta = nn.Parameter(torch.tensor(theta_initial))
+        self.log_beta = nn.Parameter(
+            torch.tensor(theta_initial),
+            requires_grad=False
+        )
         # Fixed, equal class priors: this is a BUFFER, not an optimizer parameter.
         # This preserves the existing checkpoint key and all negative-grad rules.
         self.register_buffer('class_log_priors', torch.full(
