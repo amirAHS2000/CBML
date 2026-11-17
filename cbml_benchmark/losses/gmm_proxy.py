@@ -58,14 +58,30 @@ class GaussianMixtureProxyLoss(nn.Module):
         self.dim = int(cfg.MODEL.HEAD.DIM)
         self.weight_lr = float(opt.WEIGHT_LR)
         self.weight_floor = float(opt.WEIGHT_FLOOR)
+        # 0.0 disables the additional near-uniform constraint (legacy behavior).
+        self.weight_max_deviation = float(getattr(opt, 'WEIGHT_MAX_DEVIATION', 0.0))
         self.beta_lr = float(opt.BETA_LR)
         self.proxy_lr = float(opt.PROXY_LR)
         self.init_method = str(opt.INIT_METHOD)
-        beta_initial = float(opt.BETA_INIT)
+        # THETA_INIT sets theta = log(beta) directly.  If omitted, preserve
+        # backward compatibility with the former BETA_INIT option.
+        theta_override = getattr(opt, 'THETA_INIT', None)
+        if theta_override is None:
+            beta_initial = float(opt.BETA_INIT)
+            if not (math.isfinite(beta_initial) and beta_initial > 0):
+                raise ValueError('BETA_INIT must be finite and positive.')
+            theta_initial = math.log(beta_initial)
+        else:
+            theta_initial = float(theta_override)
+            if not math.isfinite(theta_initial):
+                raise ValueError('THETA_INIT must be finite.')
+            beta_initial = math.exp(theta_initial)
         if self.num_classes < 2 or self.k < 1 or self.dim < 1:
             raise ValueError('Require C>=2, K>=1 and D>=1.')
         if not (math.isfinite(beta_initial) and beta_initial > 0):
-            raise ValueError('BETA_INIT must be finite and positive.')
+            raise ValueError('Initial precision exp(theta) must be finite and positive.')
+        if not (math.isfinite(self.weight_max_deviation) and self.weight_max_deviation >= 0):
+            raise ValueError('WEIGHT_MAX_DEVIATION must be finite and nonnegative.')
         if not (math.isfinite(self.beta_lr) and self.beta_lr > 0):
             raise ValueError('BETA_LR must be finite and positive.')
         if not (math.isfinite(self.proxy_lr) and self.proxy_lr > 0):
@@ -84,7 +100,9 @@ class GaussianMixtureProxyLoss(nn.Module):
         self.mixture_weights = nn.Parameter(torch.full(
             (self.num_classes, self.k), 1.0 / self.k
         ))
-        self.log_beta = nn.Parameter(torch.tensor(math.log(beta_initial)))
+        self.log_beta = nn.Parameter(torch.tensor(theta_initial))
+        # Fixed, equal class priors: this is a BUFFER, not an optimizer parameter.
+        # This preserves the existing checkpoint key and all negative-grad rules.
         self.register_buffer('class_log_priors', torch.full(
             (self.num_classes,), -math.log(self.num_classes)
         ))
@@ -172,6 +190,17 @@ class GaussianMixtureProxyLoss(nn.Module):
             centered = grad[active] - grad[active].mean(dim=1, keepdim=True)
             tentative = self.mixture_weights[active] - self.weight_lr * centered
             projected = project_simplex_with_floor(tentative, self.weight_floor)
+            if self.weight_max_deviation > 0 and self.k > 1:
+                # Contract toward the uniform distribution until every weight
+                # lies within +/- WEIGHT_MAX_DEVIATION of 1/K.  This operation
+                # preserves sum=1 and the strictly-positive floor; it is an
+                # additional modeling constraint, not PDF Eq. (33) alone.
+                uniform = 1.0 / self.k
+                offset = projected - uniform
+                largest = offset.abs().amax(dim=1, keepdim=True)
+                fraction = (self.weight_max_deviation /
+                            largest.clamp_min(1e-12)).clamp(max=1.0)
+                projected = uniform + fraction * offset
             self.mixture_weights[active] = projected
         if collect_stats:
             weights = self.mixture_weights.detach()
@@ -180,6 +209,8 @@ class GaussianMixtureProxyLoss(nn.Module):
                 mixture_weight_max=float(weights.max()),
                 mixture_weight_sum_error=float((weights.sum(1) - 1).abs().max()),
                 mixture_weight_entropy=float((-(weights * weights.log()).sum(1)).mean()),
+                mixture_weight_max_uniform_deviation=float(
+                    (weights - 1.0 / self.k).abs().max()),
             )
         return updates
 

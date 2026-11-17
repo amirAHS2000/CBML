@@ -8,7 +8,7 @@ MODEL:
   HEAD:
     NAME: linear_norm
     DIM: 64
-SAVE_DIR: output-resnet18-cub-gmm-proxy
+SAVE_DIR: output-resnet18-cub-gmm-proxy-theta15-uniform
 INPUT:
   MODE: RGB
   PIXEL_MEAN: [0.485, 0.456, 0.406]
@@ -27,11 +27,12 @@ LOSSES:
   GMM_PROXY_LOSS:
     NUM_CLASSES: 0
     K: 3
-    BETA_INIT: 10.0
+    THETA_INIT: 1.5  # beta starts at exp(1.5) ~= 4.4817; theta stays learnable
     BETA_LR: 0.0001
     PROXY_LR: 0.01
     WEIGHT_LR: 0.001
     WEIGHT_FLOOR: 0.0001
+    WEIGHT_MAX_DEVIATION: 0.02  # each weight stays within 1/K +/- 0.02
     INIT_METHOD: kmeans
 DATA:
   TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt

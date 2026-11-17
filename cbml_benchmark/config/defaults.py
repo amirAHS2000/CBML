@@ -65,11 +65,13 @@ _C.LOSSES.PROXY_CBML_LOSS.COUNT_MIN_ASSIGNMENTS = 3
 _C.LOSSES.GMM_PROXY_LOSS = CN()
 _C.LOSSES.GMM_PROXY_LOSS.NUM_CLASSES = 0  # inferred from train labels
 _C.LOSSES.GMM_PROXY_LOSS.K = 3
-_C.LOSSES.GMM_PROXY_LOSS.BETA_INIT = 10.0     # beta=1/sigma^2; explicit starting choice
+_C.LOSSES.GMM_PROXY_LOSS.BETA_INIT = 10.0     # legacy beta setting (used if THETA_INIT is None)
+_C.LOSSES.GMM_PROXY_LOSS.THETA_INIT = None    # optional direct theta=log(beta) initialization
 _C.LOSSES.GMM_PROXY_LOSS.BETA_LR = 0.0001     # learn theta=log(beta)
 _C.LOSSES.GMM_PROXY_LOSS.PROXY_LR = 0.01     # learn own-class Gaussian means
 _C.LOSSES.GMM_PROXY_LOSS.WEIGHT_LR = 0.001   # constrained weight step, PDF Eq. 33
 _C.LOSSES.GMM_PROXY_LOSS.WEIGHT_FLOOR = 0.0001  # strictly positive simplex
+_C.LOSSES.GMM_PROXY_LOSS.WEIGHT_MAX_DEVIATION = 0.0  # 0 disables extra near-uniform bound
 _C.LOSSES.GMM_PROXY_LOSS.INIT_METHOD = "kmeans"
 
 # softtriple_loss
