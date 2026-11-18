@@ -18,6 +18,14 @@ def sampled_gmm_stats(details, criterion):
     foreign[labels] = True
     return {
         'log_odds_mean': float(odds.mean()),
+        'gmm_loss': float(details.get('gmm_loss', torch.tensor(float('nan')))),
+        'mvc_loss': float(details.get('mvc_loss', torch.tensor(0.0))),
+        'mvc_weight': float(details.get('mvc_weight', 0.0)),
+        'mvc_target_mean': float(details.get('mvc_target_mean', torch.tensor(0.0))),
+        'mvc_positive_score_mean': float(details.get('mvc_positive_score_mean', torch.tensor(0.0))),
+        'mvc_negative_score_mean': float(details.get('mvc_negative_score_mean', torch.tensor(0.0))),
+        'mvc_negative_score_std': float(details.get('mvc_negative_score_std', torch.tensor(0.0))),
+        'mvc_residual_std': float(details.get('mvc_residual_std', torch.tensor(0.0))),
         'log_odds_p10': float(torch.quantile(odds.float(), .10)),
         'log_odds_p90': float(torch.quantile(odds.float(), .90)),
         'posterior_mean': float(posterior.mean()),
@@ -29,6 +37,7 @@ def sampled_gmm_stats(details, criterion):
         'selected_positive_weight_mean': float(details['selected_positive_weight'].mean()),
         'selected_negative_weight_mean': float(details['selected_negative_weight'].mean()),
         'beta': float(criterion.beta.detach()),
+        'theta': float(criterion.log_beta.detach()),
         'log_beta_grad': float(criterion.log_beta.grad) if criterion.log_beta.grad is not None else None,
         'proxy_grad_norm': float(grad_means.norm()) if grad_means is not None else None,
         'mixture_weight_grad_norm': float(grad_weights.norm()) if grad_weights is not None else None,

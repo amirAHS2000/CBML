@@ -73,6 +73,10 @@ _C.LOSSES.GMM_PROXY_LOSS.WEIGHT_LR = 0.001   # constrained weight step, PDF Eq. 
 _C.LOSSES.GMM_PROXY_LOSS.WEIGHT_FLOOR = 0.0001  # strictly positive simplex
 _C.LOSSES.GMM_PROXY_LOSS.WEIGHT_MAX_DEVIATION = 0.0  # 0 disables extra near-uniform bound
 _C.LOSSES.GMM_PROXY_LOSS.INIT_METHOD = "kmeans"
+_C.LOSSES.GMM_PROXY_LOSS.THETA_LEARNABLE = False  # fixed-theta MVC experiment
+_C.LOSSES.GMM_PROXY_LOSS.MVC_WEIGHT = 0.0  # 0 disables MVC; experiment config opts in
+_C.LOSSES.GMM_PROXY_LOSS.MVC_GAMMA = 0.2
+_C.LOSSES.GMM_PROXY_LOSS.MVC_DETACH_PROXIES = True  # MVC updates embeddings only
 
 # softtriple_loss
 _C.LOSSES.SOFTTRIPLE_LOSS = CN()

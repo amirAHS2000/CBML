@@ -63,6 +63,10 @@ class GaussianMixtureProxyLoss(nn.Module):
         self.beta_lr = float(opt.BETA_LR)
         self.proxy_lr = float(opt.PROXY_LR)
         self.init_method = str(opt.INIT_METHOD)
+        self.mvc_weight = float(getattr(opt, 'MVC_WEIGHT', 0.0))
+        self.mvc_gamma = float(getattr(opt, 'MVC_GAMMA', 0.2))
+        self.mvc_detach_proxies = bool(getattr(opt, 'MVC_DETACH_PROXIES', True))
+        self.theta_learnable = bool(getattr(opt, 'THETA_LEARNABLE', True))
         # THETA_INIT sets theta = log(beta) directly.  If omitted, preserve
         # backward compatibility with the former BETA_INIT option.
         theta_override = getattr(opt, 'THETA_INIT', None)
@@ -82,6 +86,10 @@ class GaussianMixtureProxyLoss(nn.Module):
             raise ValueError('Initial precision exp(theta) must be finite and positive.')
         if not (math.isfinite(self.weight_max_deviation) and self.weight_max_deviation >= 0):
             raise ValueError('WEIGHT_MAX_DEVIATION must be finite and nonnegative.')
+        if not (math.isfinite(self.mvc_weight) and self.mvc_weight >= 0):
+            raise ValueError('MVC_WEIGHT must be finite and nonnegative.')
+        if not (math.isfinite(self.mvc_gamma) and 0.0 <= self.mvc_gamma <= 1.0):
+            raise ValueError('MVC_GAMMA must lie in [0, 1].')
         if not (math.isfinite(self.beta_lr) and self.beta_lr > 0):
             raise ValueError('BETA_LR must be finite and positive.')
         if not (math.isfinite(self.proxy_lr) and self.proxy_lr > 0):
@@ -101,8 +109,7 @@ class GaussianMixtureProxyLoss(nn.Module):
             (self.num_classes, self.k), 1.0 / self.k
         ))
         self.log_beta = nn.Parameter(
-            torch.tensor(theta_initial),
-            requires_grad=False
+            torch.tensor(theta_initial), requires_grad=self.theta_learnable
         )
         # Fixed, equal class priors: this is a BUFFER, not an optimizer parameter.
         # This preserves the existing checkpoint key and all negative-grad rules.
@@ -137,6 +144,56 @@ class GaussianMixtureProxyLoss(nn.Module):
         neg_flat = negative_scores.flatten(1).argmax(dim=1)
         return pos_k, neg_flat // self.k, neg_flat % self.k
 
+    def class_gmm_similarity_scores(self, feats, detach_parameters=None):
+        """Return [B,C] scaled class log-likelihood scores for MVC.
+
+        The score is logsumexp_k(log w_ck - beta/2 * ||z-mu_ck||^2) / beta.
+        Equal class priors and the shared Gaussian normalization are omitted:
+        both are common to every class and cancel from the MVC residuals.
+        """
+        if detach_parameters is None:
+            detach_parameters = self.mvc_detach_proxies
+        x = F.normalize(feats, dim=1)
+        means = self.proxies.detach() if detach_parameters else self.proxies
+        weights = self.mixture_weights.detach() if detach_parameters else self.mixture_weights
+        # MVC is intended to regularize the embedding geometry, not tune the
+        # Gaussian scale. Keep beta fixed in this branch even when theta learns.
+        beta = self.beta.detach()
+        d2 = (x.square().sum(1, keepdim=True).unsqueeze(2)
+              + means.square().sum(-1).unsqueeze(0)
+              - 2.0 * torch.einsum('bd,ckd->bck', x, means)).clamp_min(0)
+        component_scores = weights.clamp_min(self.weight_floor).log().unsqueeze(0) - 0.5 * beta * d2
+        return torch.logsumexp(component_scores, dim=2) / beta
+
+    def mvc_loss(self, feats, labels, return_details=False):
+        """Proxy analogue of CBML Eq. (28)--(29), over all negative classes.
+
+        For each anchor, the positive-class GMM score replaces E_P[m], and
+        the mean score over all C-1 negative classes replaces E_N[m].
+        The target is gamma*s_pos + (1-gamma)*mean(s_neg); all negative
+        class scores are pulled toward that anchor-specific target.
+        """
+        scores = self.class_gmm_similarity_scores(feats)
+        rows = torch.arange(feats.shape[0], device=feats.device)
+        positive = scores[rows, labels]
+        negative_mask = torch.ones_like(scores, dtype=torch.bool)
+        negative_mask[rows, labels] = False
+        negative = scores[negative_mask].reshape(feats.shape[0], self.num_classes - 1)
+        negative_mean = negative.mean(dim=1)
+        target = self.mvc_gamma * positive + (1.0 - self.mvc_gamma) * negative_mean
+        per_anchor = (negative - target.unsqueeze(1)).square().mean(dim=1)
+        value = per_anchor.mean()
+        if not return_details:
+            return value
+        return value, {
+            'mvc_loss': value.detach(),
+            'mvc_target_mean': target.detach().mean(),
+            'mvc_positive_score_mean': positive.detach().mean(),
+            'mvc_negative_score_mean': negative.detach().mean(),
+            'mvc_negative_score_std': negative.detach().std(unbiased=False),
+            'mvc_residual_std': (negative - target.unsqueeze(1)).detach().std(unbiased=False),
+        }
+
     def loss_and_details(self, feats, labels, return_details=False):
         labels = labels.long().reshape(-1)
         if feats.ndim != 2 or not len(feats) or feats.shape[1] != self.dim:
@@ -155,10 +212,23 @@ class GaussianMixtureProxyLoss(nn.Module):
         log_negative = (self.class_log_priors[neg_c] + w_neg.log()
                         - 0.5 * self.beta * (x - neg_mu).square().sum(1))
         log_odds = log_negative - log_positive
-        loss = F.softplus(log_odds).mean()
+        gmm_loss = F.softplus(log_odds).mean()
+        if self.mvc_weight > 0.0:
+            mvc_value, mvc_details = self.mvc_loss(x, labels, return_details=True)
+        else:
+            mvc_value = gmm_loss.new_zeros(())
+            mvc_details = {
+                'mvc_loss': mvc_value.detach(),
+                'mvc_target_mean': mvc_value.detach(),
+                'mvc_positive_score_mean': mvc_value.detach(),
+                'mvc_negative_score_mean': mvc_value.detach(),
+                'mvc_negative_score_std': mvc_value.detach(),
+                'mvc_residual_std': mvc_value.detach(),
+            }
+        loss = gmm_loss + self.mvc_weight * mvc_value
         if not return_details:
             return loss
-        return loss, {
+        details = {
             'labels': labels.detach(), 'pos_k': pos_k, 'neg_c': neg_c, 'neg_k': neg_k,
             'positive_log_score': log_positive.detach(),
             'negative_log_score': log_negative.detach(),
@@ -170,7 +240,11 @@ class GaussianMixtureProxyLoss(nn.Module):
             'negative_distance2': (x.detach() - neg_mu.detach()).square().sum(1),
             'selected_positive_weight': w_pos.detach(),
             'selected_negative_weight': w_neg.detach(),
+            'gmm_loss': gmm_loss.detach(),
+            'mvc_weight': self.mvc_weight,
+            **mvc_details,
         }
+        return loss, details
 
     @torch.no_grad()
     def step_mixture_weights(self, collect_stats=False):
