@@ -60,23 +60,10 @@ _C.LOSSES.PROXY_CBML_LOSS.INIT_METHOD = "random"  # random or kmeans
 _C.LOSSES.PROXY_CBML_LOSS.COUNT_AWARE = False
 _C.LOSSES.PROXY_CBML_LOSS.COUNT_DAMPING = 10.0
 _C.LOSSES.PROXY_CBML_LOSS.COUNT_MIN_ASSIGNMENTS = 3
-
-# Multi-prototype class-conditional Gaussian mixture loss (previous_works.pdf).
-_C.LOSSES.GMM_PROXY_LOSS = CN()
-_C.LOSSES.GMM_PROXY_LOSS.NUM_CLASSES = 0  # inferred from train labels
-_C.LOSSES.GMM_PROXY_LOSS.K = 3
-_C.LOSSES.GMM_PROXY_LOSS.BETA_INIT = 10.0     # legacy beta setting (used if THETA_INIT is None)
-_C.LOSSES.GMM_PROXY_LOSS.THETA_INIT = None    # optional direct theta=log(beta) initialization
-_C.LOSSES.GMM_PROXY_LOSS.BETA_LR = 0.0001     # learn theta=log(beta)
-_C.LOSSES.GMM_PROXY_LOSS.PROXY_LR = 0.01     # learn own-class Gaussian means
-_C.LOSSES.GMM_PROXY_LOSS.WEIGHT_LR = 0.001   # constrained weight step, PDF Eq. 33
-_C.LOSSES.GMM_PROXY_LOSS.WEIGHT_FLOOR = 0.0001  # strictly positive simplex
-_C.LOSSES.GMM_PROXY_LOSS.WEIGHT_MAX_DEVIATION = 0.0  # 0 disables extra near-uniform bound
-_C.LOSSES.GMM_PROXY_LOSS.INIT_METHOD = "kmeans"
-_C.LOSSES.GMM_PROXY_LOSS.THETA_LEARNABLE = False  # fixed-theta MVC experiment
-_C.LOSSES.GMM_PROXY_LOSS.MVC_WEIGHT = 0.0  # 0 disables MVC; experiment config opts in
-_C.LOSSES.GMM_PROXY_LOSS.MVC_GAMMA = 0.2
-_C.LOSSES.GMM_PROXY_LOSS.MVC_DETACH_PROXIES = True  # MVC updates embeddings only
+# Optional direct proxy-level analogue of CBML's metric variance constraint.
+_C.LOSSES.PROXY_CBML_LOSS.MVC_ENABLED = False
+_C.LOSSES.PROXY_CBML_LOSS.MVC_WEIGHT = 1.0
+_C.LOSSES.PROXY_CBML_LOSS.MVC_GAMMA = 0.0
 
 # softtriple_loss
 _C.LOSSES.SOFTTRIPLE_LOSS = CN()

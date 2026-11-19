@@ -55,31 +55,23 @@ def summarize(path):
     for e in events:
         if e['event']=='instance_geometry':
             lines.append(json.dumps(e, sort_keys=True))
+    lines += ['', 'LOSS COMPONENTS AND PROXY-MVC (sampled training steps)']
+    for key in ('loss', 'loss_pos', 'loss_neg', 'loss_mvc', 'loss_mvc_weighted',
+                'mvc_neg_score_mean', 'mvc_neg_score_std', 'mvc_within_anchor_neg_std',
+                'mvc_positive_score_mean', 'mvc_target_mean', 'mvc_residual_std',
+                'mvc_variance_mean'):
+        v = [s[key] for s in steps if s.get(key) is not None]
+        if v:
+            lines.append(f'{key:35s} median={median(v):.6f} n={len(v)}')
+    mvc_steps = [s for s in steps if s.get('mvc_enabled')]
+    if mvc_steps:
+        lines.append(f"MVC enabled steps: {len(mvc_steps)}; weight={mvc_steps[-1].get('mvc_weight')}; gamma={mvc_steps[-1].get('mvc_gamma')}")
     lines += ['', 'PROXY GRADIENT SCALING (sampled training steps)']
     for key in ('proxy_grad_norm_before_scaling', 'proxy_grad_norm_after_scaling',
                 'proxy_scale_min', 'proxy_scale_mean', 'proxy_scale_max'):
         v = [s[key] for s in steps if s.get(key) is not None]
         if v:
             lines.append(f'{key:35s} median={median(v):.6f} n={len(v)}')
-    # Gaussian-mixture-specific measurements; absent for E0--E3 runs.
-    gmm_events = [e for e in events if e.get('event') == 'proxy_snapshot'
-                  and e.get('loss_type') == 'gmm_proxy_loss']
-    if gmm_events:
-        lines += ['', 'GAUSSIAN MIXTURE POSTERIOR / WEIGHTS (full training set)']
-        for e in gmm_events:
-            lines.append('iter={iteration} beta={beta:.6g} posterior_mean={posterior_mean:.5f} '
-                'posterior_below_half={posterior_below_half_fraction:.5f} '
-                'active={active_proxies}/{total_proxies} weight_min={mixture_weight_min:.6g} '
-                'weight_max={mixture_weight_max:.6g} entropy={mixture_entropy_mean:.5f} '
-                'sum_error={mixture_weight_sum_error:.3g}'.format(**e))
-        lines += ['', 'GAUSSIAN MIXTURE TRAINING STATISTICS (profiled steps)']
-        for key in ('posterior_mean', 'log_odds_mean', 'positive_distance2_mean',
-                    'negative_distance2_mean', 'beta', 'mixture_weight_gradient_norm',
-                    'mixture_weight_update_norm', 'mixture_weight_sum_error',
-                    'foreign_only_proxy_update_norm', 'foreign_only_weight_update_norm'):
-            values = [s[key] for s in steps if s.get(key) is not None]
-            if values:
-                lines.append(f'{key:38s} median={median(values):.6g} n={len(values)}')
     lines += ['', 'LAST SAMPLED TRAINING STEP']
     profiled = [s for s in steps if s.get('profiled')]
     if profiled:

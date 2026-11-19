@@ -1,0 +1,57 @@
+# ResNet-18 / 64-D / CUB; E3 proxy-CBML plus direct proxy-level MVC.
+MODEL:
+  BACKBONE:
+    NAME: resnet18
+  PRETRAIN: imagenet
+  HEAD:
+    NAME: linear_norm
+    DIM: 64
+SAVE_DIR: output-resnet18-cub-proxy-cbml-64-proxy-mvc-gamma0
+INPUT:
+  MODE: RGB
+  PIXEL_MEAN: [0.485, 0.456, 0.406]
+  PIXEL_STD: [0.229, 0.224, 0.225]
+SOLVER:
+  MAX_ITERS: 5000
+  STEPS: [1200]
+  OPTIMIZER_NAME: Adam
+  BASE_LR: 3.0e-05
+  WARMUP_ITERS: 0
+  WEIGHT_DECAY: 0.0005
+  CHECKPOINT_PERIOD: 200
+LOSSES:
+  NAME: proxy_cbml_loss
+  NAME_AUX: ''
+  PROXY_CBML_LOSS:
+    NUM_CLASSES: 0
+    K: 3
+    POS_A: 0.5
+    POS_B: 0.1
+    NEG_A: 0.2
+    NEG_B: 0.5
+    DETACH_NEGATIVE: true
+    PROXY_LR: 0.01
+    INIT_METHOD: kmeans
+    COUNT_AWARE: true
+    COUNT_DAMPING: 10.0
+    COUNT_MIN_ASSIGNMENTS: 3
+    MVC_ENABLED: true
+    MVC_WEIGHT: 1.0
+    MVC_GAMMA: 0.0
+DATA:
+  TRAIN_IMG_SOURCE: resource/datasets/CUB_200_2011/train.txt
+  TEST_IMG_SOURCE: resource/datasets/CUB_200_2011/test.txt
+  TRAIN_BATCHSIZE: 120
+  TEST_BATCHSIZE: 128
+  NUM_WORKERS: 8
+  NUM_INSTANCES: 8
+VALIDATION:
+  VERBOSE: 200
+DIAGNOSTICS:
+  ENABLED: true
+  STATS_EVERY: 20
+  TRAIN_RECALL_EVERY: 200
+  TRAIN_RECALL: true
+  FINAL_EVAL: true
+  FAST_RECALL: false
+  INSTANCE_GEOMETRY: true
