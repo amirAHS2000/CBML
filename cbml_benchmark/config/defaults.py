@@ -209,3 +209,6 @@ _C.DIAGNOSTICS.TRAIN_RECALL = True
 _C.DIAGNOSTICS.FINAL_EVAL = True
 _C.DIAGNOSTICS.FAST_RECALL = False  # original validation metric by default
 _C.DIAGNOSTICS.INSTANCE_GEOMETRY = False  # extra read-only pair statistics
+
+_C.DIAGNOSTICS.EXTENDED_GEOMETRY = False  # spectra/scatter and proxy-score distributions
+_C.DIAGNOSTICS.COMPONENT_GRADIENTS = False  # sampled read-only full-network reverse passes

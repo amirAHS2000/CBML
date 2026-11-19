@@ -21,11 +21,11 @@ def summarize(path):
         if e['event'] in ('environment','seed','data_setup','model_setup','proxy_init','training_ready'):
             lines.append(json.dumps(e, sort_keys=True))
     lines += ['', 'TIMING (seconds; sampled stage medians, not summed wall time)']
-    for key in ('data_wait_s','step_wall_s','transfer_and_scheduler_s','forward_s','loss_s','backward_s','optimizer_s','pre_update_diagnostics_s','proxy_gradient_scaling_s','post_update_diagnostics_s'):
+    for key in ('data_wait_s','step_wall_s','transfer_and_scheduler_s','forward_s','loss_s','backward_s','optimizer_s','pre_update_diagnostics_s','proxy_gradient_scaling_s','post_update_diagnostics_s','component_gradients_s'):
         v = [r[key] for r in steps if r.get(key) is not None]
         if v:
             lines.append(f'{key:30s} median={median(v):.5f}  n={len(v)}')
-    for name in ('evaluation','checkpoint','proxy_snapshot','instance_geometry'):
+    for name in ('evaluation','checkpoint','proxy_snapshot','instance_geometry','extended_geometry_timing'):
         e = [r for r in events if r['event']==name]
         if e:
             lines.append(f'{name:30s} total={sum(r.get("total_s",0) for r in e):.3f}  count={len(e)}')
@@ -72,6 +72,14 @@ def summarize(path):
         v = [s[key] for s in steps if s.get(key) is not None]
         if v:
             lines.append(f'{key:35s} median={median(v):.6f} n={len(v)}')
+    lines += ['', 'EXTENDED GEOMETRY (normalized vectors; population covariance)']
+    lines.extend(json.dumps(e,sort_keys=True) for e in events if e['event'] in
+                 ('embedding_spectrum','proxy_spectrum','proxy_score_geometry'))
+    lines += ['', 'COMPONENT GRADIENTS (network parameters only; sampled steps)']
+    for key in sorted({k for s in steps for k in s if k.startswith('component_') and k != 'component_gradients_s'}):
+        values = [s[key] for s in steps if s.get(key) is not None]
+        if values:
+            lines.append(f'{key:42s} median={median(values):.6f} n={len(values)}')
     lines += ['', 'LAST SAMPLED TRAINING STEP']
     profiled = [s for s in steps if s.get('profiled')]
     if profiled:

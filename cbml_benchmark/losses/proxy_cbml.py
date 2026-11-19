@@ -96,7 +96,7 @@ class ProxyCBMLLoss(nn.Module):
             }
         return loss_pos, loss_neg
 
-    def mvc_component(self, feats, labels, return_details=False):
+    def mvc_component(self, feats, labels, return_details=False, diagnostic_only=False):
         """Proxy-level MVC over all (C-1)*K foreign-class proxies per anchor.
 
         For anchor i, q_i,c,k = cosine(z_i, p_c,k). The target is
@@ -106,7 +106,7 @@ class ProxyCBMLLoss(nn.Module):
         score from xi_i. Proxy parameters are detached; gradients flow only
         through the normalized embeddings.
         """
-        if not self.mvc_enabled:
+        if not self.mvc_enabled and not diagnostic_only:
             zero = feats.new_zeros(())
             return (zero, {}) if return_details else zero
 

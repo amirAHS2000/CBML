@@ -14,6 +14,11 @@ from cbml_benchmark.utils.training_diagnostics import (
 )
 
 
+from cbml_benchmark.utils.mvc_extended_diagnostics import (
+    component_gradients, embedding_geometry, proxy_score_geometry,
+)
+
+
 def update_ema_variables(model, ema_model):
     alpha = 0.999
     for ema_param, param in zip(ema_model.parameters(), model.parameters()):
@@ -46,7 +51,21 @@ def evaluate_recall(model, loader, logger, iteration=0, split='validation',
         geometry = instance_geometry(metric.sim_mat, labels)
         diagnostics.event('instance_geometry', iteration=iteration, split=split,
                           total_s=time.perf_counter()-t, **geometry)
-    del metric  # release the full similarity matrix before proxy diagnostics
+    del metric  # release the full similarity matrix before extended geometry
+    if diagnostics and getattr(diagnostics.cfg, 'EXTENDED_GEOMETRY', False):
+        t = time.perf_counter()
+        diagnostics.event('embedding_spectrum', iteration=iteration, split=split,
+                          **embedding_geometry(feats, labels))
+        if criterion is not None and hasattr(criterion, 'proxies'):
+            bank = criterion.proxies.detach().cpu().numpy()
+            if split == 'train':
+                c, k, d = bank.shape
+                diagnostics.event('proxy_spectrum', iteration=iteration, split=split,
+                                  **embedding_geometry(bank.reshape(c*k,d), np.repeat(np.arange(c), k)))
+            diagnostics.event('proxy_score_geometry', iteration=iteration, split=split,
+                              **proxy_score_geometry(feats, labels, bank, split))
+        diagnostics.event('extended_geometry_timing', iteration=iteration, split=split,
+                          total_s=time.perf_counter()-t)
     if diagnostics and criterion is not None and split == 'train':
         diagnostics.proxy_snapshot(iteration, feats, labels, criterion)
     return recalls
@@ -86,7 +105,8 @@ def do_train(
         if iteration % cfg.VALIDATION.VERBOSE == 0 or iteration == max_iter:
             logger.info('Validation')
             recall_curr = evaluate_recall(model, val_loader, logger, iteration,
-                                          diagnostics=diagnostics, fast=fast)
+                                          diagnostics=diagnostics, fast=fast,
+                                          criterion=criterion if is_proxy else None)
             print(recall_curr)
             if recall_curr[0] > best_recall:
                 best_recall, best_iteration = recall_curr[0], iteration
@@ -148,10 +168,26 @@ def do_train(
         optimizer.zero_grad()
         if proxy_optimizer is not None:
             proxy_optimizer.zero_grad()
+        component_stats = {}
+        if (profile and is_proxy and criterion_aux is None
+                and getattr(diagnostics.cfg, 'COMPONENT_GRADIENTS', False)):
+            with preserve_rng(device):
+                # Measure the same unweighted MVC even in the disabled baseline.
+                # Never add this diagnostic-only term to the training loss.
+                diagnostic_mvc = loss_mvc
+                if not criterion.mvc_enabled:
+                    diagnostic_mvc, mvc_stats = criterion.mvc_component(
+                        feats, targets, return_details=True, diagnostic_only=True)
+                    details.update(mvc_stats)
+                weight = criterion.mvc_weight if criterion.mvc_enabled else 0.0
+                component_stats = component_gradients(model, loss_pos, loss_neg,
+                                                      diagnostic_mvc, weight)
+                del diagnostic_mvc
+            mark('component_gradients_s')
         loss.backward()
         mark('backward_s')
 
-        extra = {}
+        extra = component_stats
         if profile:
             extra.update(gradient_norms(model))
             if details is not None:
@@ -216,7 +252,8 @@ def do_train(
     # Optional observation of the final checkpoint. Do NOT change legacy best selection.
     if diagnostics and diagnostics.cfg.FINAL_EVAL and max_iter > start_iter:
         with preserve_rng(device):
-            evaluate_recall(model, val_loader, logger, max_iter, diagnostics=diagnostics, fast=fast)
+            evaluate_recall(model, val_loader, logger, max_iter, diagnostics=diagnostics, fast=fast,
+                                          criterion=criterion if is_proxy else None)
             if train_eval_loader is not None:
                 evaluate_recall(model, train_eval_loader, logger, max_iter, 'train', diagnostics,
                                 fast=fast, criterion=criterion if is_proxy else None)
