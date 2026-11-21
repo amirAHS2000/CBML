@@ -6,7 +6,7 @@ MODEL:
   HEAD:
     NAME: linear_norm
     DIM: 64
-SAVE_DIR: output-resnet18-cub-proxy-cbml-64-mvc-lambda10-extended
+SAVE_DIR: output-resnet18-cub-proxy-cbml-64-mvc-lambda30-extended
 INPUT:
   MODE: RGB
   PIXEL_MEAN: [0.485, 0.456, 0.406]
