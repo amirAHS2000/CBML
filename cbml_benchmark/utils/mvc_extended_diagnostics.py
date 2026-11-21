@@ -81,12 +81,14 @@ def embedding_geometry(feats, labels):
                 between_total_fraction=between/trace if trace > 0 else None)
 
 
-def proxy_score_geometry(feats, labels, proxies, split):
+def proxy_score_geometry(feats, labels, proxies, split, tail_delta=0.0):
     """Exact per-anchor population variance and distributions of cosine scores.
 
     Train: exclude every own-class proxy. Validation: all training proxies are
     foreign; never interpret validation label IDs as training class indices.
     CPU, blockwise products; store only scores needed for exact quantiles.
+    The optional upper-tail fields are read-only diagnostics, measured over
+    foreign proxies for training and the entire training bank for validation.
     """
     x = _normalize(feats)
     p = _normalize(proxies)
@@ -109,14 +111,24 @@ def proxy_score_geometry(feats, labels, proxies, split):
     variances = scores.var(axis=1)
     means = scores.mean(axis=1)
     maxima = scores.max(axis=1)
+    # Detached-target analogue evaluated on full-data embeddings: not a
+    # training gradient and not a validation-class supervised regularizer.
+    centered = scores - means[:, None] - float(tail_delta)
+    tail_active = centered > 0.
+    tail_excess = np.maximum(centered, 0.)
+    tail_energy = np.mean(tail_excess**2, axis=1)
     result = dict(score_scope='foreign_class_proxies' if split=='train' else 'all_training_proxies',
                   n_anchors=len(x), proxies_per_anchor=scores.shape[1],
                   pooled_score_mean=float(scores.mean()), pooled_score_std=float(scores.std()),
                   within_anchor_variance_mean=float(variances.mean()),
                   within_anchor_std_mean=float(np.sqrt(variances).mean()),
                   anchor_mean_variance=float(means.var()),
-                  nearest_proxy_score_mean=float(maxima.mean()))
-    for name, values in (('score',scores),('anchor_variance',variances),('nearest_proxy_score',maxima)):
+                  nearest_proxy_score_mean=float(maxima.mean()),
+                  tail_delta=float(tail_delta),
+                  tail_active_fraction=float(tail_active.mean()),
+                  tail_excess_mean=float(tail_excess.mean()),
+                  tail_penalty_mean=float(tail_energy.mean()))
+    for name, values in (('score',scores),('anchor_variance',variances),('nearest_proxy_score',maxima),('tail_penalty',tail_energy)):
         for q, value in zip((10,50,90,95,99),np.percentile(values,[10,50,90,95,99])):
             result[f'{name}_p{q}'] = float(value)
     return result

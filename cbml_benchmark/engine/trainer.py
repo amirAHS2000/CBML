@@ -63,7 +63,11 @@ def evaluate_recall(model, loader, logger, iteration=0, split='validation',
                 diagnostics.event('proxy_spectrum', iteration=iteration, split=split,
                                   **embedding_geometry(bank.reshape(c*k,d), np.repeat(np.arange(c), k)))
             diagnostics.event('proxy_score_geometry', iteration=iteration, split=split,
-                              **proxy_score_geometry(feats, labels, bank, split))
+                              **proxy_score_geometry(
+                                  feats, labels, bank, split,
+                                  tail_delta=getattr(criterion, 'mvc_tail_delta', 0.0)
+                                  if getattr(criterion, 'mvc_mode', 'symmetric') == 'upper_tail'
+                                  else 0.0))
         diagnostics.event('extended_geometry_timing', iteration=iteration, split=split,
                           total_s=time.perf_counter()-t)
     if diagnostics and criterion is not None and split == 'train':
@@ -194,7 +198,9 @@ def do_train(
                 extra.update(sampled_proxy_stats(details, criterion))
                 for key in ('mvc_neg_score_mean', 'mvc_neg_score_std',
                             'mvc_within_anchor_neg_std', 'mvc_positive_score_mean',
-                            'mvc_target_mean', 'mvc_residual_std', 'mvc_variance_mean'):
+                            'mvc_target_mean', 'mvc_residual_std', 'mvc_variance_mean',
+                            'mvc_tail_threshold_mean', 'mvc_tail_active_fraction',
+                            'mvc_tail_hinge_mean', 'mvc_tail_hinge_max'):
                     if key in details:
                         extra[key] = float(details[key])
                 before = criterion.proxies.detach().clone()
@@ -234,6 +240,8 @@ def do_train(
                              mvc_enabled=bool(is_proxy and criterion.mvc_enabled),
                              mvc_weight=criterion.mvc_weight if is_proxy else None,
                              mvc_gamma=criterion.mvc_gamma if is_proxy else None,
+                             mvc_mode=criterion.mvc_mode if is_proxy else None,
+                             mvc_tail_delta=criterion.mvc_tail_delta if is_proxy else None,
                              batch_size=len(images), data_wait_s=data_wait, step_wall_s=step_s,
                              network_lr=optimizer.param_groups[0]['lr'],
                              proxy_lr=proxy_optimizer.param_groups[0]['lr'] if proxy_optimizer else None,

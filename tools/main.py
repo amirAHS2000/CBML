@@ -114,6 +114,8 @@ def _train(cfg, resume, logger, device, diagnostics):
             saved_config.setdefault("MVC_ENABLED", False)
             saved_config.setdefault("MVC_WEIGHT", 1.0)
             saved_config.setdefault("MVC_GAMMA", 0.0)
+            saved_config.setdefault("MVC_MODE", "symmetric")
+            saved_config.setdefault("MVC_TAIL_DELTA", 0.0)
             if saved_config != arguments["proxy_config"]:
                 raise ValueError("Proxy configuration differs from the checkpoint; use the original training config.")
         for key in ('iteration', 'best_iteration', 'best_recall'):

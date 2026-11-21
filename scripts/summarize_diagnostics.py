@@ -59,13 +59,16 @@ def summarize(path):
     for key in ('loss', 'loss_pos', 'loss_neg', 'loss_mvc', 'loss_mvc_weighted',
                 'mvc_neg_score_mean', 'mvc_neg_score_std', 'mvc_within_anchor_neg_std',
                 'mvc_positive_score_mean', 'mvc_target_mean', 'mvc_residual_std',
-                'mvc_variance_mean'):
+                'mvc_variance_mean', 'mvc_tail_threshold_mean',
+                'mvc_tail_active_fraction', 'mvc_tail_hinge_mean',
+                'mvc_tail_hinge_max'):
         v = [s[key] for s in steps if s.get(key) is not None]
         if v:
             lines.append(f'{key:35s} median={median(v):.6f} n={len(v)}')
     mvc_steps = [s for s in steps if s.get('mvc_enabled')]
     if mvc_steps:
-        lines.append(f"MVC enabled steps: {len(mvc_steps)}; weight={mvc_steps[-1].get('mvc_weight')}; gamma={mvc_steps[-1].get('mvc_gamma')}")
+        last = mvc_steps[-1]
+        lines.append(f"MVC enabled steps: {len(mvc_steps)}; mode={last.get('mvc_mode', 'symmetric')}; weight={last.get('mvc_weight')}; gamma={last.get('mvc_gamma')}; delta={last.get('mvc_tail_delta', 0.)}")
     lines += ['', 'PROXY GRADIENT SCALING (sampled training steps)']
     for key in ('proxy_grad_norm_before_scaling', 'proxy_grad_norm_after_scaling',
                 'proxy_scale_min', 'proxy_scale_mean', 'proxy_scale_max'):

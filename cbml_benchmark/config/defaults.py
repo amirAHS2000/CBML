@@ -64,6 +64,9 @@ _C.LOSSES.PROXY_CBML_LOSS.COUNT_MIN_ASSIGNMENTS = 3
 _C.LOSSES.PROXY_CBML_LOSS.MVC_ENABLED = False
 _C.LOSSES.PROXY_CBML_LOSS.MVC_WEIGHT = 1.0
 _C.LOSSES.PROXY_CBML_LOSS.MVC_GAMMA = 0.0
+# Opt-in new research variant, backward-compatible with previous symmetric MVC.
+_C.LOSSES.PROXY_CBML_LOSS.MVC_MODE = "symmetric"  # symmetric or upper_tail
+_C.LOSSES.PROXY_CBML_LOSS.MVC_TAIL_DELTA = 0.0  # cosine excess tolerance >= 0
 
 # softtriple_loss
 _C.LOSSES.SOFTTRIPLE_LOSS = CN()

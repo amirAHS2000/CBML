@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -7,12 +8,11 @@ from .registry import LOSS
 
 @LOSS.register("proxy_cbml_loss")
 class ProxyCBMLLoss(nn.Module):
-    """CBML-inspired instance-to-proxy loss with optional proxy-level MVC.
+    """CBML-inspired instance-to-proxy loss with optional proxy regularizer.
 
-    The base objective still selects one hardest positive and one hardest
-    negative proxy per anchor. The MVC branch considers every proxy belonging
-    to every non-target class. All proxies are detached in the MVC branch, so
-    MVC gradients update the embedding network but never the proxy bank.
+    Both symmetric MVC and the proposed upper-tail variant consider all
+    foreign-class proxies. Their proxy vectors are detached, preserving the
+    E3 positive-only proxy update rule.
     """
 
     def __init__(self, cfg):
@@ -31,10 +31,18 @@ class ProxyCBMLLoss(nn.Module):
         self.mvc_enabled = bool(getattr(opt, "MVC_ENABLED", False))
         self.mvc_weight = float(getattr(opt, "MVC_WEIGHT", 1.0))
         self.mvc_gamma = float(getattr(opt, "MVC_GAMMA", 0.0))
+        self.mvc_mode = str(getattr(opt, "MVC_MODE", "symmetric")).lower()
+        self.mvc_tail_delta = float(getattr(opt, "MVC_TAIL_DELTA", 0.0))
         if self.mvc_weight < 0:
             raise ValueError("MVC_WEIGHT must be non-negative.")
         if not 0.0 <= self.mvc_gamma <= 1.0:
             raise ValueError("MVC_GAMMA must be in [0, 1].")
+        if self.mvc_mode not in ("symmetric", "upper_tail"):
+            raise ValueError("MVC_MODE must be 'symmetric' or 'upper_tail'.")
+        if not math.isfinite(self.mvc_tail_delta) or self.mvc_tail_delta < 0:
+            raise ValueError("MVC_TAIL_DELTA must be finite and nonnegative.")
+        if self.mvc_mode == "upper_tail" and self.mvc_gamma != 0.0:
+            raise ValueError("MVC_GAMMA must be zero for upper_tail MVC; the mean is the detached negative-proxy mean.")
         if self.mvc_enabled and not self.detach_negative:
             raise ValueError("Proxy-MVC requires DETACH_NEGATIVE=True to preserve proxy-update constraints.")
 
@@ -97,14 +105,15 @@ class ProxyCBMLLoss(nn.Module):
         return loss_pos, loss_neg
 
     def mvc_component(self, feats, labels, return_details=False, diagnostic_only=False):
-        """Proxy-level MVC over all (C-1)*K foreign-class proxies per anchor.
+        """All-negative-proxy regularizer with two explicitly selected modes.
 
-        For anchor i, q_i,c,k = cosine(z_i, p_c,k). The target is
-            xi_i = gamma * max_k q_i,y_i,k
-                   + (1-gamma) * mean_{c != y_i,k}(q_i,c,k).
-        The regularizer is the mean squared deviation of every negative-proxy
-        score from xi_i. Proxy parameters are detached; gradients flow only
-        through the normalized embeddings.
+        symmetric: mean_{i,foreign p} (s_i,p - [gamma*s_i,+ +
+                    (1-gamma)*mean_foreign(s_i,p)])**2 (previous MVC).
+        upper_tail: mean_{i,foreign p} relu(s_i,p - stopgrad(mean_foreign)
+                    - delta)**2. The mean is a fixed per-anchor threshold for
+                    differentiation; only above-threshold scores receive
+                    gradient. Both modes detach all proxy vectors, and update
+                    the embedding network only. No instance-to-instance terms.
         """
         if not self.mvc_enabled and not diagnostic_only:
             zero = feats.new_zeros(())
@@ -127,9 +136,18 @@ class ProxyCBMLLoss(nn.Module):
         ).reshape(feats.shape[0], (self.num_classes - 1) * self.k)
 
         negative_mean = negative_scores.mean(dim=1)
-        target = self.mvc_gamma * positive_hard + (1.0 - self.mvc_gamma) * negative_mean
-        residual = negative_scores - target.unsqueeze(1)
-        per_anchor = residual.square().mean(dim=1)
+        if self.mvc_mode == "upper_tail":
+            # Stop gradient through the per-anchor mean. Otherwise reducing a
+            # hard negative could partially be achieved by raising easy ones.
+            target = negative_mean.detach()
+            residual = negative_scores - target.unsqueeze(1) - self.mvc_tail_delta
+            hinge = F.relu(residual)
+            per_anchor = hinge.square().mean(dim=1)
+        else:
+            target = self.mvc_gamma * positive_hard + (1.0 - self.mvc_gamma) * negative_mean
+            residual = negative_scores - target.unsqueeze(1)
+            hinge = None
+            per_anchor = residual.square().mean(dim=1)
         loss_mvc = per_anchor.mean()
 
         if not return_details:
@@ -141,8 +159,17 @@ class ProxyCBMLLoss(nn.Module):
             "mvc_positive_score_mean": positive_hard.detach().mean(),
             "mvc_target_mean": target.detach().mean(),
             "mvc_residual_std": residual.detach().std(unbiased=False),
+            # This is the full negative-proxy variance in BOTH modes; it is
+            # not the upper-tail penalty itself when MVC_MODE=upper_tail.
             "mvc_variance_mean": negative_scores.detach().var(dim=1, unbiased=False).mean(),
         }
+        if hinge is not None:
+            stats.update({
+                "mvc_tail_threshold_mean": (target + self.mvc_tail_delta).mean(),
+                "mvc_tail_active_fraction": (residual.detach() > 0).float().mean(),
+                "mvc_tail_hinge_mean": hinge.detach().mean(),
+                "mvc_tail_hinge_max": hinge.detach().max(),
+            })
         return loss_mvc, stats
 
     def loss_terms(self, feats, labels, return_details=False):
